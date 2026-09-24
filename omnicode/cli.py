@@ -13,6 +13,7 @@ from rich.console import Console
 from rich.table import Table
 
 from .config import (
+    OmniConfig,
     load_config,
     save_global_config,
     save_project_config,
