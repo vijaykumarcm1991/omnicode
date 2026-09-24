@@ -11,6 +11,8 @@ from omnicode.config import (
     list_profiles,
     set_active_profile,
     save_current_config,
+    detect_context_limit,
+    KNOWN_PROVIDERS,
 )
 
 
@@ -62,3 +64,38 @@ def test_save_current_config(tmp_path, monkeypatch):
     reloaded_cfg = load_config(workspace_root=tmp_path)
     assert reloaded_cfg.base_url == "http://localhost:11434/v1"
     assert reloaded_cfg.model == "qwen2.5-coder:32b"
+
+
+def test_known_providers_have_no_hardcoded_models():
+    """Verify that known providers do not hardcode model lists, only base URLs."""
+    for key, provider in KNOWN_PROVIDERS.items():
+        assert "base_url" in provider
+        assert provider["base_url"].startswith("http")
+        assert "name" in provider
+        # Models must not be hardcoded in provider config
+        assert "models" not in provider
+        assert "default_model" not in provider
+
+
+def test_detect_context_limit():
+    """Test automatic detection of context limits from metadata and model names."""
+    # From raw metadata
+    assert detect_context_limit("custom-model", {"context_length": 65536}) == 65536
+    assert detect_context_limit("custom-model", {"max_model_len": 32768}) == 32768
+
+    # From model name patterns
+    assert detect_context_limit("custom-coder-32k") == 32768
+    assert detect_context_limit("meta-llama-128k") == 128000
+    assert detect_context_limit("my-llm-1m") == 1000000
+
+    # From well-known model families
+    assert detect_context_limit("gemini-1.5-pro") == 1000000
+    assert detect_context_limit("claude-3-7-sonnet") == 200000
+    assert detect_context_limit("deepseek-chat") == 128000
+    assert detect_context_limit("llama-3.3-70b-instruct") == 128000
+    assert detect_context_limit("qwen2.5-coder-32b") == 128000
+    assert detect_context_limit("gpt-4o-mini") == 128000
+
+    # Default fallback
+    assert detect_context_limit("completely-unknown-model-xyz") == 32768
+

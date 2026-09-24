@@ -29,6 +29,7 @@ class OmniCompleter(Completer):
         self.discovered_models: List[str] = []
         self.slash_commands = [
             ("/help", "Show help and commands"),
+            ("/auth", "Configure endpoint provider, API key, and model"),
             ("/clear", "Clear screen and reset context"),
             ("/compact", "Compact conversation context"),
             ("/cost", "Show token metrics and cost"),
@@ -289,6 +290,17 @@ class InteractiveREPL:
                     avail = PROVIDER_PRESETS[self.agent.config.provider].get("models", [])
                     self.console.print(f"[dim]Available presets for {self.agent.config.provider}: {', '.join(avail)}[/dim]")
 
+        elif cmd == "/auth":
+            from .auth import run_auth_wizard
+            from ..core.llm_client import LLMClient
+            new_cfg = await run_auth_wizard(console=self.console, current_config=self.agent.config, workspace_root=self.workspace_root)
+            self.agent.config = new_cfg
+            self.agent.llm_client = LLMClient(new_cfg)
+            self.agent.context_manager.config = new_cfg
+            self.agent.context_manager.token_tracker.model_name = new_cfg.model
+            self.completer.discovered_models.clear()
+            self.console.print(f"[bold green]✓ Session authenticated with {new_cfg.base_url} (Model: {new_cfg.model}, Context: {new_cfg.context_window:,} tokens)[/bold green]")
+
         elif cmd == "/provider":
             if arg:
                 pname = arg.lower()
@@ -296,14 +308,14 @@ class InteractiveREPL:
                     preset = PROVIDER_PRESETS[pname]
                     self.agent.config.provider = pname
                     self.agent.config.base_url = preset["base_url"]
-                    self.agent.config.model = preset["default_model"]
                     self.console.print(
-                        f"[bold green]✓ Switched provider to: {pname} (Endpoint: {preset['base_url']}, Model: {preset['default_model']})[/bold green]"
+                        f"[bold green]✓ Switched provider to: {pname} (Endpoint: {preset['base_url']})[/bold green]"
                     )
+                    self.console.print("[dim]Run [bold white]/models[/bold white] to discover models on this provider.[/dim]")
                 else:
                     self.console.print(f"[bold red]Unknown provider: {arg}. Available: {list(PROVIDER_PRESETS.keys())}[/bold red]")
             else:
-                self.console.print(f"Current Provider: [bold green]{self.agent.config.provider}[/bold green] ({self.agent.config.base_url})")
+                self.console.print(f"Current Provider: [bold green]{self.agent.config.provider or 'custom'}[/bold green] ({self.agent.config.base_url})")
 
         elif cmd == "/mode":
             if arg:

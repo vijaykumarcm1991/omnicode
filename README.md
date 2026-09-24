@@ -5,16 +5,16 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-19%20Passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-21%20Passed-brightgreen.svg)]()
 
 ---
 
 ## 🌟 Highlights
 
-- 🔌 **Universal OpenAI-API Compatibility**: Seamlessly connects to OpenAI (`gpt-4o`, `o1`, `o3-mini`), OpenRouter (`claude-3.7-sonnet`, `deepseek-r1`), DeepSeek (`deepseek-chat`, `deepseek-reasoner`), Groq, and local LLMs (Ollama, LM Studio, vLLM).
-- 💾 **Endpoint & Credential Persistence**: Save custom endpoints and secret keys once with `--save`, named profiles (`omnicode profile`), or the interactive `omnicode setup` wizard.
-- 🎛️ **Custom & Self-Hosted Models**: Full support for any custom model checkpoint, fine-tuned weights, internal corporate servers, or self-hosted engines via standard OpenAI endpoints.
-- 🔍 **Live `/v1/models` Auto-Discovery**: Automatically query and discover all models available on your server in real time with interactive tables and `<Tab>` autocompletion.
+- 🔌 **Universal OpenAI-API Compatibility**: Works with any OpenAI-compatible provider (OpenAI, OpenRouter, DeepSeek, Groq, Ollama, LM Studio, vLLM, or private custom clusters).
+- 🔐 **Streamlined `/auth` Setup**: Choose from known providers with preconfigured URLs (only prompts for API key) or custom providers (URL + key), with instant live model discovery.
+- 🚫 **Zero Hardcoded Models**: No stale or hardcoded model lists. OmniCode dynamically queries `/v1/models` in real time.
+- 📏 **Automatic Context Limit Detection**: Automatically determines and configures the exact context window limit (e.g. 128k, 200k, 1M tokens) from server metadata and model families.
 - 🧠 **Autonomous Multi-Turn Agent Loop**: Powered by a robust ReAct execution engine with real-time streaming, chain-of-thought (`<think>` / reasoning) visualization, and automatic loop detection.
 - 🛠️ **Built-in Toolset**:
   - **File Operations**: `view_file` (with line slices & pagination), `write_file`, `edit_file` (targeted replacement with fuzzy match), `apply_patch` (unified diffs), `list_dir`, `file_search`, `grep_search` (regex).
@@ -61,17 +61,20 @@ omnicode -b "https://ai.internal.corp/v1" -k "secret-token" -m "internal-coder-7
 
 ---
 
-### Method 2: Interactive Setup Wizard (`omnicode setup` / `omnicode login`)
-Run the interactive setup wizard to configure endpoints with automated connectivity testing and model selection:
+### Method 2: Interactive Auth & Setup Wizard (`omnicode auth` or `/auth`)
+Run the interactive authentication wizard at any time via the CLI or directly inside the REPL with `/auth`:
 
 ```bash
-omnicode setup
+omnicode auth
 ```
-1. Prompts for your Base URL.
-2. Prompts for your API Key.
-3. Automatically connects to `/v1/models` to discover all available models.
-4. Lets you select your default model from a menu.
-5. Saves everything to `~/.omnicode/config.json`.
+*(Aliases: `omnicode login`, `omnicode setup`, or `/auth` in REPL)*
+
+1. **Provider Selection**: Displays a list of known providers plus an option for custom self-hosted endpoints:
+   - For **Known Providers** (OpenAI, OpenRouter, DeepSeek, Groq, Ollama, LM Studio, vLLM), the API URL is **already preconfigured**—you only need to provide your API key (optional for local engines).
+   - For **Custom Providers**, you are prompted for both the OpenAI-compatible Base URL and API key.
+2. **Live Model Discovery**: OmniCode queries `GET /v1/models` in real time to fetch all available models.
+3. **Auto Context Detection**: Calculates and displays the context window limit (e.g. 128k, 200k, 1M) for each model.
+4. **Interactive Selection**: Select your desired model and choose whether to save globally, for the local project, or as a named profile.
 
 ---
 
@@ -101,7 +104,7 @@ omnicode -P local
 If you change your model, provider, or endpoint during an active chat session, simply type `/save` in the REPL:
 
 ```text
-omnicode[gpt-4o] ❯ /save
+omnicode[custom-coder] ❯ /save
 ✓ Current configuration saved to global config (~/.omnicode/config.json).
 ```
 
@@ -109,17 +112,20 @@ omnicode[gpt-4o] ❯ /save
 
 ## ⚙️ Configuration & Providers
 
-### 1. Provider Presets
+OmniCode does not rely on static, outdated model lists. When you select a known provider, only the official API URL is preconfigured:
 
-| Provider | Preset Name | Default Model | Example Model |
+| Provider | Provider Key | Preconfigured Base URL | Requires Key? |
 | :--- | :--- | :--- | :--- |
-| **OpenAI** | `openai` | `gpt-4o` | `o3-mini`, `o1`, `gpt-4.5-preview` |
-| **OpenRouter** | `openrouter` | `anthropic/claude-3.7-sonnet` | `deepseek/deepseek-r1`, `openai/gpt-4o` |
-| **DeepSeek** | `deepseek` | `deepseek-chat` | `deepseek-reasoner` |
-| **Groq** | `groq` | `llama-3.3-70b-versatile` | `deepseek-r1-distill-llama-70b` |
-| **Ollama (Local)** | `ollama` | `qwen2.5-coder:latest` | `deepseek-r1:latest`, `llama3.1` |
-| **LM Studio (Local)** | `lmstudio` | `local-model` | Any loaded GGUF model |
-| **vLLM (Local)** | `vllm` | `default` | Any hosted model |
+| **OpenAI** | `openai` | `https://api.openai.com/v1` | Yes |
+| **OpenRouter** | `openrouter` | `https://openrouter.ai/api/v1` | Yes |
+| **DeepSeek** | `deepseek` | `https://api.deepseek.com` | Yes |
+| **Groq** | `groq` | `https://api.groq.com/openai/v1` | Yes |
+| **Ollama (Local)** | `ollama` | `http://localhost:11434/v1` | Optional |
+| **LM Studio (Local)** | `lmstudio` | `http://localhost:1234/v1` | Optional |
+| **vLLM (Local)** | `vllm` | `http://localhost:8000/v1` | Optional |
+| **Custom Provider** | `custom` | *User Specified* (e.g. `https://ai.internal.corp/v1`) | User Specified |
+
+All models and their context limits are **dynamically resolved** upon connection!
 
 ---
 
@@ -179,6 +185,7 @@ cat test_failure.log | omnicode "Explain why this test failed and patch the file
 Within the interactive REPL, use slash commands for fast actions:
 
 - `/help` — Display help and command table
+- `/auth` — Configure provider, API key, and auto-discover models
 - `/save [project]` — Save current endpoint and model settings to config
 - `/models` — Discover and list all models from `/v1/models`
 - `/model [name]` — Switch or view the active LLM model (supports `<Tab>` autocompletion)

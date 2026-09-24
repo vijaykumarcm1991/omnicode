@@ -112,6 +112,12 @@ def main(
     if user_query == "-":
         user_query = sys.stdin.read().strip()
 
+    # If not configured (no base_url or model) and running interactive mode, launch auth wizard
+    if not user_query and (not config.base_url or not config.model):
+        from .ui.auth import run_auth_wizard
+        console.print("[bold yellow]⚡ No LLM provider or model configured yet.[/bold yellow]")
+        config = asyncio.run(run_auth_wizard(console=console, current_config=config, workspace_root=workspace_root))
+
     # Create Agent
     agent = OmniAgent(
         config=config,
@@ -140,6 +146,9 @@ def main(
 
     # Run in Single-Prompt mode or Interactive REPL mode
     if user_query:
+        if not config.base_url or not config.model:
+            console.print("[bold red]Error: No provider or model configured. Run 'omnicode auth' first or specify -b and -m.[/bold red]")
+            return
         # Non-interactive single query mode
         asyncio.run(agent.run(user_query))
     else:
@@ -148,112 +157,13 @@ def main(
         asyncio.run(repl.start())
 
 
+@main.command("auth")
 @main.command("setup")
-@click.option("-b", "--base-url", help="OpenAI-compatible endpoint base URL.")
-@click.option("-k", "--api-key", help="API key for endpoint.")
-@click.option("-m", "--model", help="Default model name.")
-@click.option("-P", "--profile", help="Save under a named profile.")
-@click.option("--project", is_flag=True, help="Save to project config instead of global.")
-def setup_cmd(
-    base_url: Optional[str],
-    api_key: Optional[str],
-    model: Optional[str],
-    profile: Optional[str],
-    project: bool,
-):
-    """Interactive endpoint setup wizard: test endpoint, pick model, and save."""
-    from rich.prompt import Prompt
-    from .core.llm_client import LLMClient
-
-    console.print("\n[bold cyan]🔧 OmniCode Endpoint Setup Wizard[/bold cyan]")
-    console.print("[dim]Configure your custom or cloud LLM endpoint so you don't have to re-enter flags.[/dim]\n")
-
-    current_cfg = load_config()
-
-    # 1. Base URL
-    b_url = base_url or Prompt.ask(
-        "[bold white]OpenAI-compatible Base URL[/bold white]",
-        default=current_cfg.base_url or "https://api.openai.com/v1",
-        console=console,
-    ).strip()
-
-    # 2. API Key
-    a_key = api_key
-    if a_key is None:
-        def_key_display = f"{current_cfg.api_key[:6]}..." if current_cfg.api_key else ""
-        prompt_label = f"[bold white]API Key[/bold white]" + (f" [dim](current: {def_key_display})[/dim]" if def_key_display else "")
-        a_key_input = Prompt.ask(prompt_label, default=current_cfg.api_key or "", console=console, password=True)
-        a_key = a_key_input.strip()
-
-    test_cfg = OmniConfig(base_url=b_url, api_key=a_key, model="test")
-    test_client = LLMClient(test_cfg)
-
-    # 3. Discover models
-    discovered_models = []
-    with console.status(f"[cyan]Connecting to {b_url}/models to verify...[/cyan]"):
-        try:
-            discovered_models = asyncio.run(test_client.list_models())
-        except Exception as e:
-            console.print(f"[yellow]⚠️ Could not query /v1/models ({str(e)}). You can still specify model manually.[/yellow]")
-
-    selected_model = model
-    if discovered_models:
-        console.print(f"[bold green]✓ Connection successful! Found {len(discovered_models)} models.[/bold green]")
-        table = Table(title="Discovered Models Preview")
-        table.add_column("#", style="dim", width=4)
-        table.add_column("Model ID", style="bold cyan")
-        table.add_column("Owner", style="dim")
-        for i, m in enumerate(discovered_models[:15], 1):
-            table.add_row(str(i), m["id"], m["owned_by"])
-        console.print(table)
-        if len(discovered_models) > 15:
-            console.print(f"[dim]... and {len(discovered_models) - 15} more models.[/dim]")
-
-        if not selected_model:
-            selected_model = Prompt.ask(
-                "[bold white]Select default model[/bold white]",
-                default=discovered_models[0]["id"] if discovered_models else (current_cfg.model or "gpt-4o"),
-                console=console,
-            ).strip()
-    else:
-        if not selected_model:
-            selected_model = Prompt.ask(
-                "[bold white]Target model name[/bold white]",
-                default=current_cfg.model or "gpt-4o",
-                console=console,
-            ).strip()
-
-    # 4. Save
-    save_data = {
-        "base_url": b_url,
-        "api_key": a_key,
-        "model": selected_model,
-    }
-
-    if profile:
-        save_profile(profile, save_data)
-        set_active_profile(profile)
-        console.print(f"[bold green]✓ Saved and activated profile '{profile}'.[/bold green]")
-    elif project:
-        save_project_config(Path.cwd(), save_data)
-        console.print(f"[bold green]✓ Saved to project config (.omnicode/config.json).[/bold green]")
-    else:
-        save_global_config(save_data)
-        console.print(f"[bold green]✓ Saved to global config (~/.omnicode/config.json).[/bold green]")
-
-    console.print(f"\n[bold green]🚀 Setup complete! You can now just run [bold white]omnicode[/bold white] directly.[/bold green]\n")
-
-
 @main.command("login")
-@click.option("-b", "--base-url", help="OpenAI-compatible endpoint base URL.")
-@click.option("-k", "--api-key", help="API key for endpoint.")
-@click.option("-m", "--model", help="Default model name.")
-@click.option("-P", "--profile", help="Save under a named profile.")
-@click.option("--project", is_flag=True, help="Save to project config instead of global.")
-@click.pass_context
-def login_cmd(ctx, base_url, api_key, model, profile, project):
-    """Alias for 'omnicode setup'."""
-    ctx.invoke(setup_cmd, base_url=base_url, api_key=api_key, model=model, profile=profile, project=project)
+def auth_cmd():
+    """Interactive authentication wizard: select known provider or custom endpoint, enter key, and auto-discover models."""
+    from .ui.auth import run_auth_wizard
+    asyncio.run(run_auth_wizard(console=console, workspace_root=Path.cwd()))
 
 
 @main.group("profile")

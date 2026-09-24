@@ -34,6 +34,8 @@ async def test_discover_models_from_endpoint():
     assert models[0]["id"] == "custom-fine-tuned-v1"
     assert models[1]["id"] == "qwen2.5-coder-32b"
     assert models[0]["owned_by"] == "my-org"
+    assert "raw" in models[0]
+
 
 
 def test_custom_model_configuration():

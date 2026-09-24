@@ -10,105 +10,119 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from pydantic import BaseModel, Field
 
-# Provider presets
-PROVIDER_PRESETS = {
+import re
+
+# Known providers list: tool only preconfigures standard API URL and env_key; no preconfigured models!
+KNOWN_PROVIDERS: Dict[str, Dict[str, Any]] = {
     "openai": {
+        "name": "OpenAI",
         "base_url": "https://api.openai.com/v1",
-        "default_model": "gpt-4o",
         "env_key": "OPENAI_API_KEY",
-        "models": ["gpt-4o", "gpt-4o-mini", "o1", "o3-mini", "gpt-4-turbo"],
-        "context_windows": {
-            "gpt-4o": 128000,
-            "gpt-4o-mini": 128000,
-            "o1": 200000,
-            "o3-mini": 200000,
-        },
+        "requires_key": True,
     },
     "openrouter": {
+        "name": "OpenRouter",
         "base_url": "https://openrouter.ai/api/v1",
-        "default_model": "anthropic/claude-3.7-sonnet",
         "env_key": "OPENROUTER_API_KEY",
-        "models": [
-            "anthropic/claude-3.7-sonnet",
-            "anthropic/claude-3.5-sonnet",
-            "deepseek/deepseek-r1",
-            "deepseek/deepseek-chat",
-            "openai/gpt-4o",
-            "meta-llama/llama-3.3-70b-instruct",
-        ],
-        "context_windows": {
-            "anthropic/claude-3.7-sonnet": 200000,
-            "anthropic/claude-3.5-sonnet": 200000,
-            "deepseek/deepseek-r1": 128000,
-            "deepseek/deepseek-chat": 128000,
-            "openai/gpt-4o": 128000,
-        },
+        "requires_key": True,
     },
     "deepseek": {
+        "name": "DeepSeek",
         "base_url": "https://api.deepseek.com",
-        "default_model": "deepseek-chat",
         "env_key": "DEEPSEEK_API_KEY",
-        "models": ["deepseek-chat", "deepseek-reasoner"],
-        "context_windows": {
-            "deepseek-chat": 128000,
-            "deepseek-reasoner": 128000,
-        },
+        "requires_key": True,
     },
     "groq": {
+        "name": "Groq",
         "base_url": "https://api.groq.com/openai/v1",
-        "default_model": "llama-3.3-70b-versatile",
         "env_key": "GROQ_API_KEY",
-        "models": [
-            "llama-3.3-70b-versatile",
-            "deepseek-r1-distill-llama-70b",
-            "mixtral-8x7b-32768",
-        ],
-        "context_windows": {
-            "llama-3.3-70b-versatile": 128000,
-            "deepseek-r1-distill-llama-70b": 128000,
-        },
+        "requires_key": True,
     },
     "ollama": {
+        "name": "Ollama (Local)",
         "base_url": "http://localhost:11434/v1",
-        "default_model": "qwen2.5-coder:latest",
         "env_key": "OLLAMA_API_KEY",
-        "models": ["qwen2.5-coder", "llama3.1", "deepseek-r1", "mistral"],
-        "context_windows": {
-            "default": 32768,
-        },
+        "requires_key": False,
     },
     "lmstudio": {
+        "name": "LM Studio (Local)",
         "base_url": "http://localhost:1234/v1",
-        "default_model": "local-model",
         "env_key": "LMSTUDIO_API_KEY",
-        "models": ["local-model"],
-        "context_windows": {
-            "default": 32768,
-        },
+        "requires_key": False,
     },
     "vllm": {
+        "name": "vLLM (Local)",
         "base_url": "http://localhost:8000/v1",
-        "default_model": "default",
         "env_key": "VLLM_API_KEY",
-        "models": ["default"],
-        "context_windows": {
-            "default": 32768,
-        },
+        "requires_key": False,
     },
 }
+PROVIDER_PRESETS = KNOWN_PROVIDERS
+
+
+def detect_context_limit(model_id: str, raw_metadata: Optional[Dict[str, Any]] = None) -> int:
+    """Automatically determine and configure context window limit for a model."""
+    if not model_id:
+        return 128000
+
+    # 1. Inspect raw metadata from server if available
+    if raw_metadata:
+        for field in [
+            "context_length",
+            "max_context_length",
+            "context_window",
+            "max_model_len",
+            "max_position_embeddings",
+            "max_tokens",
+        ]:
+            val = raw_metadata.get(field)
+            if isinstance(val, int) and val >= 2048:
+                return val
+
+    m_lower = model_id.lower()
+
+    # 2. Match explicit numeric context indicators (e.g. 128k, 64k, 32k, 1m, 200k)
+    match = re.search(r"(\d+)(k|m)(?:[_\-\b]|$)", m_lower)
+    if match:
+        num = int(match.group(1))
+        unit = match.group(2)
+        if unit == "k":
+            return num * 1000 if num >= 100 else num * 1024
+        elif unit == "m":
+            return num * 1000000
+
+    # 3. Model family heuristics
+    if "gemini" in m_lower:
+        return 1000000
+    if any(k in m_lower for k in ["claude-3-7", "claude-3.7", "claude-3-5", "claude-3.5", "claude-3"]):
+        return 200000
+    if any(k in m_lower for k in ["o1", "o3-mini", "o3", "o1-mini", "o1-preview"]):
+        return 200000
+    if any(k in m_lower for k in ["gpt-4o", "gpt-4.5", "gpt-4-turbo"]):
+        return 128000
+    if "deepseek" in m_lower:
+        return 128000
+    if any(k in m_lower for k in ["llama-3.3", "llama-3.2", "llama-3.1", "llama3.3", "llama3.2", "llama3.1"]):
+        return 128000
+    if any(k in m_lower for k in ["qwen2.5", "qwen-2.5", "qwq"]):
+        return 128000
+    if any(k in m_lower for k in ["mistral-large", "codestral"]):
+        return 128000
+    if "gpt-3.5-turbo" in m_lower:
+        return 16385
+    if any(k in m_lower for k in ["llama-3", "llama3"]):
+        return 8192
+
+    return 32768  # Sensible default for general models
 
 
 class OmniConfig(BaseModel):
-    """Configuration schema for OmniCode CLI."""
+    """Configuration schema for OmniCode CLI without hardcoded models."""
 
-    provider: str = Field(default="openai", description="Active provider preset name")
-    base_url: str = Field(
-        default="https://api.openai.com/v1", description="OpenAI compatible base URL"
-    )
-    api_key: str = Field(
-        default="", description="API key for the OpenAI-compatible service"
-    )
-    model: str = Field(default="gpt-4o", description="Target model name")
+    provider: str = Field(default="", description="Active provider name")
+    base_url: str = Field(default="", description="OpenAI compatible base URL")
+    api_key: str = Field(default="", description="API key for the LLM endpoint")
+    model: str = Field(default="", description="Target model name")
     temperature: float = Field(
         default=0.1, description="Sampling temperature (lower is more deterministic)"
     )
@@ -226,8 +240,8 @@ def load_config(
         config_dict["provider"] = env_provider.lower()
 
     # Detect provider preset if specified or from environment
-    current_provider = override_provider or config_dict.get("provider", "openai")
-    preset = PROVIDER_PRESETS.get(current_provider, {})
+    current_provider = override_provider or config_dict.get("provider", "")
+    preset = KNOWN_PROVIDERS.get(current_provider, {})
 
     # Base URL from env or preset
     env_base_url = (
@@ -235,14 +249,14 @@ def load_config(
         or os.environ.get("OPENAI_BASE_URL")
         or (preset.get("base_url") if preset else None)
     )
-    if env_base_url and "base_url" not in config_dict:
+    if env_base_url and not config_dict.get("base_url"):
         config_dict["base_url"] = env_base_url
 
     # API key from env or preset
     env_key_name = preset.get("env_key", "OPENAI_API_KEY") if preset else "OPENAI_API_KEY"
     env_api_key = (
         os.environ.get("OMNICODE_API_KEY")
-        or os.environ.get(env_key_name)
+        or (os.environ.get(env_key_name) if env_key_name else None)
         or os.environ.get("OPENAI_API_KEY")
     )
     if env_api_key and not config_dict.get("api_key"):
@@ -252,8 +266,6 @@ def load_config(
     env_model = os.environ.get("OMNICODE_MODEL") or os.environ.get("OPENAI_MODEL")
     if env_model:
         config_dict["model"] = env_model
-    elif "model" not in config_dict and preset:
-        config_dict["model"] = preset.get("default_model", "gpt-4o")
 
     # Permission mode from env
     env_perm = os.environ.get("OMNICODE_PERMISSION_MODE")
@@ -263,12 +275,10 @@ def load_config(
     # 6. Explicit CLI overrides
     if override_provider:
         config_dict["provider"] = override_provider
-        if override_provider in PROVIDER_PRESETS:
-            p = PROVIDER_PRESETS[override_provider]
-            if not override_base_url and "base_url" not in config_dict:
+        if override_provider in KNOWN_PROVIDERS:
+            p = KNOWN_PROVIDERS[override_provider]
+            if not override_base_url and not config_dict.get("base_url"):
                 config_dict["base_url"] = p["base_url"]
-            if not override_model and "model" not in config_dict:
-                config_dict["model"] = p["default_model"]
 
     if override_base_url:
         config_dict["base_url"] = override_base_url
@@ -279,14 +289,11 @@ def load_config(
     if override_permission_mode:
         config_dict["permission_mode"] = override_permission_mode
 
-    # Auto-adjust context window if known
     cfg = OmniConfig(**config_dict)
-    if current_provider in PROVIDER_PRESETS:
-        cw_map = PROVIDER_PRESETS[current_provider].get("context_windows", {})
-        if cfg.model in cw_map:
-            cfg.context_window = cw_map[cfg.model]
-        elif "default" in cw_map:
-            cfg.context_window = cw_map["default"]
+
+    # Automatically configure context window limit for the model
+    if cfg.model and ("context_window" not in config_dict or config_dict.get("context_window") == 128000):
+        cfg.context_window = detect_context_limit(cfg.model)
 
     return cfg
 

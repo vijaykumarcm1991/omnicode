@@ -215,10 +215,12 @@ class LLMClient:
             response = await self.client.models.list()
             models = []
             for item in response.data:
+                raw_dict = item.model_dump() if hasattr(item, "model_dump") else getattr(item, "__dict__", {})
                 models.append({
                     "id": item.id,
                     "owned_by": getattr(item, "owned_by", "") or "unknown",
                     "created": getattr(item, "created", None),
+                    "raw": raw_dict,
                 })
             return sorted(models, key=lambda m: m["id"].lower())
         except Exception as e:
