@@ -175,20 +175,28 @@ def load_config(
     override_api_key: Optional[str] = None,
     override_provider: Optional[str] = None,
     override_permission_mode: Optional[str] = None,
+    override_profile: Optional[str] = None,
 ) -> OmniConfig:
-    """Load configuration merging defaults, global file, project file, env vars, and overrides."""
+    """Load configuration merging defaults, global file, project file, env vars, profiles, and overrides."""
     config_dict: Dict[str, Any] = {}
 
     # 1. Global config file
     global_path = get_global_config_path()
+    global_data: Dict[str, Any] = {}
     if global_path.is_file():
         try:
             with open(global_path, "r", encoding="utf-8") as f:
-                config_dict.update(json.load(f))
+                global_data = json.load(f)
+                config_dict.update(global_data)
         except Exception:
             pass
 
-    # 2. Project config file (.omnicode/config.json)
+    # 2. Named profile if specified
+    active_profile_name = override_profile or os.environ.get("OMNICODE_PROFILE") or global_data.get("active_profile")
+    if active_profile_name and "profiles" in global_data and active_profile_name in global_data["profiles"]:
+        config_dict.update(global_data["profiles"][active_profile_name])
+
+    # 3. Project config file (.omnicode/config.json)
     root = workspace_root or Path.cwd()
     project_conf = root / ".omnicode" / "config.json"
     if project_conf.is_file():
@@ -198,7 +206,7 @@ def load_config(
         except Exception:
             pass
 
-    # 3. Project rules (.omnicoderules or .clirules or AGENTS.md)
+    # 4. Project rules (.omnicoderules or .clirules or AGENTS.md)
     rules_text = ""
     for rfile in [".omnicoderules", ".clirules", "AGENTS.md", "CLAUDE.md"]:
         rpath = root / rfile
@@ -212,7 +220,7 @@ def load_config(
         existing_extra = config_dict.get("system_prompt_extra", "")
         config_dict["system_prompt_extra"] = (existing_extra + "\n" + rules_text).strip()
 
-    # 4. Environment variables
+    # 5. Environment variables
     env_provider = os.environ.get("OMNICODE_PROVIDER")
     if env_provider:
         config_dict["provider"] = env_provider.lower()
@@ -252,7 +260,7 @@ def load_config(
     if env_perm:
         config_dict["permission_mode"] = env_perm
 
-    # 5. Explicit CLI overrides
+    # 6. Explicit CLI overrides
     if override_provider:
         config_dict["provider"] = override_provider
         if override_provider in PROVIDER_PRESETS:
@@ -313,3 +321,65 @@ def save_project_config(workspace_root: Path, config_data: Dict[str, Any]) -> No
     existing.update(config_data)
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(existing, f, indent=2)
+
+
+def save_current_config(config: OmniConfig, is_project: bool = False, workspace_root: Optional[Path] = None) -> Path:
+    """Save the active OmniConfig instance to global or project config."""
+    save_data = {
+        "provider": config.provider,
+        "base_url": config.base_url,
+        "api_key": config.api_key,
+        "model": config.model,
+        "permission_mode": config.permission_mode,
+        "temperature": config.temperature,
+        "context_window": config.context_window,
+        "max_agent_steps": config.max_agent_steps,
+    }
+    if is_project:
+        root = workspace_root or Path.cwd()
+        save_project_config(root, save_data)
+        return root / ".omnicode" / "config.json"
+    else:
+        save_global_config(save_data)
+        return get_global_config_path()
+
+
+def save_profile(name: str, profile_data: Dict[str, Any]) -> None:
+    """Save named profile to ~/.omnicode/config.json under 'profiles'."""
+    config_path = get_global_config_path()
+    existing: Dict[str, Any] = {}
+    if config_path.is_file():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        except Exception:
+            pass
+
+    if "profiles" not in existing:
+        existing["profiles"] = {}
+
+    existing["profiles"][name] = profile_data
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(existing, f, indent=2)
+
+
+def list_profiles() -> Dict[str, Dict[str, Any]]:
+    """List all saved profiles in ~/.omnicode/config.json."""
+    config_path = get_global_config_path()
+    if config_path.is_file():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("profiles", {})
+        except Exception:
+            pass
+    return {}
+
+
+def set_active_profile(name: str) -> bool:
+    """Set the active default profile name in global config."""
+    profiles = list_profiles()
+    if name not in profiles:
+        return False
+    save_global_config({"active_profile": name})
+    return True

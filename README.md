@@ -5,13 +5,14 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-17%20Passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-19%20Passed-brightgreen.svg)]()
 
 ---
 
 ## 🌟 Highlights
 
 - 🔌 **Universal OpenAI-API Compatibility**: Seamlessly connects to OpenAI (`gpt-4o`, `o1`, `o3-mini`), OpenRouter (`claude-3.7-sonnet`, `deepseek-r1`), DeepSeek (`deepseek-chat`, `deepseek-reasoner`), Groq, and local LLMs (Ollama, LM Studio, vLLM).
+- 💾 **Endpoint & Credential Persistence**: Save custom endpoints and secret keys once with `--save`, named profiles (`omnicode profile`), or the interactive `omnicode setup` wizard.
 - 🎛️ **Custom & Self-Hosted Models**: Full support for any custom model checkpoint, fine-tuned weights, internal corporate servers, or self-hosted engines via standard OpenAI endpoints.
 - 🔍 **Live `/v1/models` Auto-Discovery**: Automatically query and discover all models available on your server in real time with interactive tables and `<Tab>` autocompletion.
 - 🧠 **Autonomous Multi-Turn Agent Loop**: Powered by a robust ReAct execution engine with real-time streaming, chain-of-thought (`<think>` / reasoning) visualization, and automatic loop detection.
@@ -27,7 +28,7 @@
   - `ask`: Explicit confirmation for every tool action.
   - `yolo` (`-y` / `--yes`): Auto-approves all actions for headless scripting.
 - 🔄 **Context Budgeting & Auto-Compaction**: Automatic conversation summarization and token tracking to prevent exceeding LLM context windows.
-- 💻 **Rich Terminal REPL**: Fast prompt-toolkit interface with `@file` path auto-completions, slash commands (`/help`, `/models`, `/compact`, `/cost`, `/diff`, `/model`, etc.), and live syntax highlighting.
+- 💻 **Rich Terminal REPL**: Fast prompt-toolkit interface with `@file` path auto-completions, slash commands (`/help`, `/models`, `/save`, `/compact`, `/cost`, `/diff`, `/model`, etc.), and live syntax highlighting.
 
 ---
 
@@ -35,7 +36,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/omnicode.git
+git clone https://github.com/vijaykumarcm1991/omnicode.git
 cd omnicode
 
 # Install in editable mode
@@ -44,27 +45,71 @@ pip install -e .
 
 ---
 
-## ⚙️ Configuration & Providers
+## 💾 Saving & Configuring Endpoints (Never Re-type Flags!)
 
-OmniCode supports easy provider switching via environment variables, CLI flags, or config files.
+OmniCode provides four flexible ways to save endpoint URLs, API keys, and models so you only have to configure them once:
 
-### 1. API Keys & Environment Variables
+### Method 1: Use `--save` Flag on Launch (Instant)
+Just append `--save` (or `-s`) to your command. OmniCode will run your session and simultaneously persist the settings globally:
 
 ```bash
-# OpenAI
-export OPENAI_API_KEY="sk-..."
+omnicode -b "https://ai.internal.corp/v1" -k "secret-token" -m "internal-coder-70b" --save
+```
+> Next time, simply type `omnicode` and it will automatically use `https://ai.internal.corp/v1` with your token and model!
 
-# OpenRouter (Access Claude 3.7 Sonnet, DeepSeek-R1, etc.)
-export OPENROUTER_API_KEY="sk-or-..."
+*Tip:* Use `--save-project` to save endpoint settings inside `.omnicode/config.json` for a specific repository only.
 
-# DeepSeek
-export DEEPSEEK_API_KEY="sk-..."
+---
 
-# Groq
-export GROQ_API_KEY="gsk_..."
+### Method 2: Interactive Setup Wizard (`omnicode setup` / `omnicode login`)
+Run the interactive setup wizard to configure endpoints with automated connectivity testing and model selection:
+
+```bash
+omnicode setup
+```
+1. Prompts for your Base URL.
+2. Prompts for your API Key.
+3. Automatically connects to `/v1/models` to discover all available models.
+4. Lets you select your default model from a menu.
+5. Saves everything to `~/.omnicode/config.json`.
+
+---
+
+### Method 3: Named Profiles (`omnicode profile`)
+Easily switch between multiple work, home, and cloud endpoints:
+
+```bash
+# Save a corporate endpoint profile
+omnicode profile save work -b "https://ai.internal.corp/v1" -k "secret-token" -m "internal-coder-70b"
+
+# Save a local Ollama profile
+omnicode profile save local -b "http://localhost:11434/v1" -m "qwen2.5-coder:32b"
+
+# List all saved profiles
+omnicode profile list
+
+# Switch default active profile
+omnicode profile use work
+
+# Or launch with a specific profile on demand
+omnicode -P local
 ```
 
-### 2. Provider Presets
+---
+
+### Method 4: Save from Inside REPL (`/save`)
+If you change your model, provider, or endpoint during an active chat session, simply type `/save` in the REPL:
+
+```text
+omnicode[gpt-4o] ❯ /save
+✓ Current configuration saved to global config (~/.omnicode/config.json).
+```
+
+---
+
+## ⚙️ Configuration & Providers
+
+### 1. Provider Presets
 
 | Provider | Preset Name | Default Model | Example Model |
 | :--- | :--- | :--- | :--- |
@@ -78,71 +123,23 @@ export GROQ_API_KEY="gsk_..."
 
 ---
 
-## 🎛️ Custom Models & Auto-Discovery
+## 🔍 Live Dynamic Model Discovery (`/v1/models`)
 
-OmniCode works seamlessly with any custom, fine-tuned, or private LLM server and can dynamically discover available models from the `/v1/models` API endpoint.
+OmniCode can automatically query the `GET /v1/models` endpoint of whatever server you connect to.
 
-### 1. Running Custom & Local Models
-
-Point OmniCode to your custom endpoint with `--base-url` (or `-b`) and `--model` (or `-m`):
-
+### Terminal Discovery:
 ```bash
-# Self-hosted vLLM instance
-omnicode --base-url "http://192.168.1.100:8000/v1" --model "my-fine-tuned-qwen-coder-32b"
-
-# Local LM Studio
-omnicode --base-url "http://localhost:1234/v1" --model "local-model"
-
-# Private corporate server with API token
-omnicode -b "https://ai.internal.corp/v1" -k "secret-token" -m "internal-coder-70b"
-```
-
-You can also persist custom endpoints permanently:
-
-```bash
-omnicode config set base_url "http://localhost:8000/v1"
-omnicode config set model "my-custom-model"
-```
-
-### 2. Dynamic Model Discovery (`/v1/models`)
-
-#### A. From the Terminal CLI
-Query the remote server's `/v1/models` endpoint directly:
-
-```bash
-# Fetch live models from active configured server
+# Discover models from current active endpoint
 omnicode models --fetch
 
-# Discover models from a specific local or remote server
+# Query a specific remote or local server
 omnicode models --fetch --base-url "http://localhost:11434/v1"
 omnicode models --fetch --base-url "https://openrouter.ai/api/v1" --api-key "sk-or-..."
 ```
 
-**Output:**
-```text
-               Live Discovered Models (http://localhost:11434/v1/models)
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┓
-┃ Model ID                           ┃ Owner    ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━┩
-│ qwen2.5-coder:32b                  │ ollama   │
-│ deepseek-r1:70b                    │ ollama   │
-│ llama3.3:70b-instruct-q8_0         │ ollama   │
-│ mistral-large:latest               │ ollama   │
-└────────────────────────────────────┴──────────┘
-Total: 4 models available on endpoint.
-```
-
-#### B. Inside the Interactive REPL
-- Run `/models` (or `/model` without arguments) in the REPL to discover and display all models from the live endpoint.
-- Type `/model <Tab>` to auto-complete and select any model discovered from the server.
-
-```text
-omnicode[gpt-4o] ❯ /models
-Discovered 4 models from http://localhost:11434/v1/models
-
-omnicode[gpt-4o] ❯ /model qwen2.5-coder:32b
-✓ Switched model to: qwen2.5-coder:32b
-```
+### In-REPL Discovery:
+- Type `/models` in the chat shell to discover and list all available models.
+- Type `/model <Tab>` to autoselect any model discovered from the endpoint.
 
 ---
 
@@ -150,28 +147,21 @@ omnicode[gpt-4o] ❯ /model qwen2.5-coder:32b
 
 ### 1. Interactive REPL Mode
 
-Launch the interactive coding assistant in your project directory:
+Launch the interactive coding assistant:
 
 ```bash
 omnicode
 ```
 
-Or target a specific provider and model:
+Or target a specific provider or profile:
 
 ```bash
-# Run with Claude 3.7 Sonnet via OpenRouter
+omnicode --profile work
 omnicode --provider openrouter --model anthropic/claude-3.7-sonnet
-
-# Run with DeepSeek-R1 reasoning model
 omnicode --provider deepseek --model deepseek-reasoner
-
-# Run with local Ollama
-omnicode --provider ollama --model qwen2.5-coder:latest
 ```
 
 ### 2. Single-Prompt / Scripting Mode
-
-Execute a specific task directly without entering the interactive shell:
 
 ```bash
 # Fix a bug or refactor code
@@ -189,6 +179,7 @@ cat test_failure.log | omnicode "Explain why this test failed and patch the file
 Within the interactive REPL, use slash commands for fast actions:
 
 - `/help` — Display help and command table
+- `/save [project]` — Save current endpoint and model settings to config
 - `/models` — Discover and list all models from `/v1/models`
 - `/model [name]` — Switch or view the active LLM model (supports `<Tab>` autocompletion)
 - `/provider [name]` — Switch provider preset (`openai`, `openrouter`, `deepseek`, etc.)
@@ -202,14 +193,6 @@ Within the interactive REPL, use slash commands for fast actions:
 - `/rules` — Show active `.omnicoderules`
 - `/tools` — List all registered tools
 - `/exit` or `/quit` — Exit the REPL
-
-### 4. Referencing Files with `@`
-
-In the interactive REPL, type `@` followed by any filename to automatically autocomplete and embed file contents into your prompt:
-
-```text
-omnicode[gpt-4o] ❯ Refactor @src/auth.py to use async/await and add tests to @tests/test_auth.py
-```
 
 ---
 

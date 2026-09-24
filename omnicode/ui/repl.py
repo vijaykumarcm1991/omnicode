@@ -36,6 +36,7 @@ class OmniCompleter(Completer):
             ("/model", "Switch active LLM model"),
             ("/provider", "Switch provider preset"),
             ("/mode", "Change permissions mode"),
+            ("/save", "Save current endpoint/model config to disk"),
             ("/diff", "Show git diff"),
             ("/status", "Show git status"),
             ("/commit", "Commit staged/modified changes"),
@@ -350,6 +351,14 @@ class InteractiveREPL:
                 ttype = "[green]Read-Only[/green]" if t.is_read_only else "[yellow]Modifying[/yellow]"
                 table.add_row(t.name, ttype, t.description)
             self.console.print(table)
+
+        elif cmd in ["/save", "/save-config"]:
+            from ..config import save_current_config
+            is_proj = (arg.strip().lower() == "project")
+            saved_file = save_current_config(self.agent.config, is_project=is_proj, workspace_root=self.workspace_root)
+            dest = "project config (.omnicode/config.json)" if is_proj else f"global config ({saved_file})"
+            self.console.print(f"[bold green]✓ Current configuration saved to {dest}.[/bold green]")
+            self.console.print(f"[dim]Endpoint: {self.agent.config.base_url} | Model: {self.agent.config.model}[/dim]")
 
         elif cmd == "/rules":
             if self.agent.config.system_prompt_extra:

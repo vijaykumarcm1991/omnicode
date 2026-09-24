@@ -16,6 +16,10 @@ from .config import (
     load_config,
     save_global_config,
     save_project_config,
+    save_current_config,
+    save_profile,
+    list_profiles,
+    set_active_profile,
     get_global_config_path,
     PROVIDER_PRESETS,
 )
@@ -40,10 +44,13 @@ console = Console(legacy_windows=False)
     context_settings=dict(help_option_names=["-h", "--help"], allow_extra_args=True),
 )
 @click.option("-p", "--prompt", "prompt_opt", help="Prompt to execute in non-interactive batch mode.")
-@click.option("-m", "--model", help="Target LLM model name (e.g. gpt-4o, deepseek-chat, anthropic/claude-3.7-sonnet).")
+@click.option("-m", "--model", help="Target LLM model name (e.g. gpt-4o, deepseek-chat, internal-coder-70b).")
 @click.option("--provider", help="Provider preset (openai, openrouter, deepseek, groq, ollama, lmstudio, vllm).")
 @click.option("-b", "--base-url", help="OpenAI-compatible API base URL.")
 @click.option("-k", "--api-key", help="API key for LLM endpoint.")
+@click.option("-P", "--profile", help="Use a specific saved endpoint profile.")
+@click.option("-s", "--save", "--save-config", is_flag=True, help="Persist these endpoint & model settings to global config (~/.omnicode/config.json).")
+@click.option("--save-project", is_flag=True, help="Persist these endpoint & model settings to project config (.omnicode/config.json).")
 @click.option("-y", "--yes", "--yolo", "--dangerously-skip-permissions", is_flag=True, help="Auto-approve all tool actions without confirmation.")
 @click.option("--permission-mode", type=click.Choice(["ask", "auto-read", "yolo"]), help="Tool permission mode.")
 @click.option("--resume", help="Resume previous session by ID or 'latest'.")
@@ -56,6 +63,9 @@ def main(
     provider: Optional[str],
     base_url: Optional[str],
     api_key: Optional[str],
+    profile: Optional[str],
+    save: bool,
+    save_project: bool,
     yes: bool,
     permission_mode: Optional[str],
     resume: Optional[str],
@@ -76,10 +86,18 @@ def main(
         override_api_key=api_key,
         override_provider=provider,
         override_permission_mode=perm_mode,
+        override_profile=profile,
     )
 
     if max_steps:
         config.max_agent_steps = max_steps
+
+    # If --save or --save-project was specified, persist to disk
+    if save or save_project:
+        saved_path = save_current_config(config, is_project=save_project, workspace_root=workspace_root)
+        dest_str = "project config (.omnicode/config.json)" if save_project else f"global config ({saved_path})"
+        console.print(f"[bold green]✓ Configuration saved to {dest_str}.[/bold green]")
+        console.print(f"[dim]Endpoint: {config.base_url} | Model: {config.model}[/dim]\n")
 
     # Extract prompt if provided
     extra_tokens = list(ctx.args)
@@ -127,6 +145,179 @@ def main(
         # Interactive REPL mode
         repl = InteractiveREPL(agent=agent, console=console)
         asyncio.run(repl.start())
+
+
+@main.command("setup")
+@click.option("-b", "--base-url", help="OpenAI-compatible endpoint base URL.")
+@click.option("-k", "--api-key", help="API key for endpoint.")
+@click.option("-m", "--model", help="Default model name.")
+@click.option("-P", "--profile", help="Save under a named profile.")
+@click.option("--project", is_flag=True, help="Save to project config instead of global.")
+def setup_cmd(
+    base_url: Optional[str],
+    api_key: Optional[str],
+    model: Optional[str],
+    profile: Optional[str],
+    project: bool,
+):
+    """Interactive endpoint setup wizard: test endpoint, pick model, and save."""
+    from rich.prompt import Prompt
+    from .core.llm_client import LLMClient
+
+    console.print("\n[bold cyan]🔧 OmniCode Endpoint Setup Wizard[/bold cyan]")
+    console.print("[dim]Configure your custom or cloud LLM endpoint so you don't have to re-enter flags.[/dim]\n")
+
+    current_cfg = load_config()
+
+    # 1. Base URL
+    b_url = base_url or Prompt.ask(
+        "[bold white]OpenAI-compatible Base URL[/bold white]",
+        default=current_cfg.base_url or "https://api.openai.com/v1",
+        console=console,
+    ).strip()
+
+    # 2. API Key
+    a_key = api_key
+    if a_key is None:
+        def_key_display = f"{current_cfg.api_key[:6]}..." if current_cfg.api_key else ""
+        prompt_label = f"[bold white]API Key[/bold white]" + (f" [dim](current: {def_key_display})[/dim]" if def_key_display else "")
+        a_key_input = Prompt.ask(prompt_label, default=current_cfg.api_key or "", console=console, password=True)
+        a_key = a_key_input.strip()
+
+    test_cfg = OmniConfig(base_url=b_url, api_key=a_key, model="test")
+    test_client = LLMClient(test_cfg)
+
+    # 3. Discover models
+    discovered_models = []
+    with console.status(f"[cyan]Connecting to {b_url}/models to verify...[/cyan]"):
+        try:
+            discovered_models = asyncio.run(test_client.list_models())
+        except Exception as e:
+            console.print(f"[yellow]⚠️ Could not query /v1/models ({str(e)}). You can still specify model manually.[/yellow]")
+
+    selected_model = model
+    if discovered_models:
+        console.print(f"[bold green]✓ Connection successful! Found {len(discovered_models)} models.[/bold green]")
+        table = Table(title="Discovered Models Preview")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Model ID", style="bold cyan")
+        table.add_column("Owner", style="dim")
+        for i, m in enumerate(discovered_models[:15], 1):
+            table.add_row(str(i), m["id"], m["owned_by"])
+        console.print(table)
+        if len(discovered_models) > 15:
+            console.print(f"[dim]... and {len(discovered_models) - 15} more models.[/dim]")
+
+        if not selected_model:
+            selected_model = Prompt.ask(
+                "[bold white]Select default model[/bold white]",
+                default=discovered_models[0]["id"] if discovered_models else (current_cfg.model or "gpt-4o"),
+                console=console,
+            ).strip()
+    else:
+        if not selected_model:
+            selected_model = Prompt.ask(
+                "[bold white]Target model name[/bold white]",
+                default=current_cfg.model or "gpt-4o",
+                console=console,
+            ).strip()
+
+    # 4. Save
+    save_data = {
+        "base_url": b_url,
+        "api_key": a_key,
+        "model": selected_model,
+    }
+
+    if profile:
+        save_profile(profile, save_data)
+        set_active_profile(profile)
+        console.print(f"[bold green]✓ Saved and activated profile '{profile}'.[/bold green]")
+    elif project:
+        save_project_config(Path.cwd(), save_data)
+        console.print(f"[bold green]✓ Saved to project config (.omnicode/config.json).[/bold green]")
+    else:
+        save_global_config(save_data)
+        console.print(f"[bold green]✓ Saved to global config (~/.omnicode/config.json).[/bold green]")
+
+    console.print(f"\n[bold green]🚀 Setup complete! You can now just run [bold white]omnicode[/bold white] directly.[/bold green]\n")
+
+
+@main.command("login")
+@click.option("-b", "--base-url", help="OpenAI-compatible endpoint base URL.")
+@click.option("-k", "--api-key", help="API key for endpoint.")
+@click.option("-m", "--model", help="Default model name.")
+@click.option("-P", "--profile", help="Save under a named profile.")
+@click.option("--project", is_flag=True, help="Save to project config instead of global.")
+@click.pass_context
+def login_cmd(ctx, base_url, api_key, model, profile, project):
+    """Alias for 'omnicode setup'."""
+    ctx.invoke(setup_cmd, base_url=base_url, api_key=api_key, model=model, profile=profile, project=project)
+
+
+@main.group("profile")
+def profile_group():
+    """Manage named endpoint profiles (e.g. work, local, openrouter)."""
+    pass
+
+
+@profile_group.command("list")
+def profile_list():
+    """List all saved endpoint profiles."""
+    profiles = list_profiles()
+    cfg_path = get_global_config_path()
+    active = ""
+    if cfg_path.is_file():
+        import json
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                active = json.load(f).get("active_profile", "")
+        except Exception:
+            pass
+
+    if not profiles:
+        console.print("[dim]No saved profiles found. Save one using: [bold white]omnicode profile save <name> -b <url> -m <model>[/bold white][/dim]")
+        return
+
+    table = Table(title="[bold cyan]Saved Endpoint Profiles[/bold cyan]")
+    table.add_column("Active", style="bold green", width=8)
+    table.add_column("Profile Name", style="bold cyan")
+    table.add_column("Base URL", style="white")
+    table.add_column("Model", style="green")
+
+    for name, data in profiles.items():
+        is_act = "● Active" if name == active else ""
+        table.add_row(is_act, name, data.get("base_url", ""), data.get("model", ""))
+
+    console.print(table)
+
+
+@profile_group.command("save")
+@click.argument("name")
+@click.option("-b", "--base-url", required=True, help="OpenAI-compatible base URL.")
+@click.option("-k", "--api-key", default="", help="API key.")
+@click.option("-m", "--model", required=True, help="Default model name.")
+@click.option("--provider", default="custom", help="Provider name tag.")
+def profile_save_cmd(name: str, base_url: str, api_key: str, model: str, provider: str):
+    """Save a new named profile."""
+    save_profile(name, {
+        "base_url": base_url,
+        "api_key": api_key,
+        "model": model,
+        "provider": provider,
+    })
+    console.print(f"[bold green]✓ Profile '{name}' saved.[/bold green]")
+    console.print(f"[dim]Use it with: omnicode -P {name} or omnicode profile use {name}[/dim]")
+
+
+@profile_group.command("use")
+@click.argument("name")
+def profile_use_cmd(name: str):
+    """Set a profile as the active default."""
+    if set_active_profile(name):
+        console.print(f"[bold green]✓ Switched active profile to '{name}'.[/bold green]")
+    else:
+        console.print(f"[bold red]Profile '{name}' not found. Run 'omnicode profile list' to see available profiles.[/bold red]")
 
 
 @main.command("init")
