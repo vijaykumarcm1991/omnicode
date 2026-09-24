@@ -1,0 +1,11 @@
+# OmniCode Project Rules
+
+## Coding Standards & Conventions
+- Write clean, modular, well-documented code.
+- Follow existing project style and patterns.
+- Ensure all tests pass before completing tasks.
+
+## Build & Test Commands
+# - Test: pytest
+# - Lint: ruff check .
+# - Run: python -m src.main
