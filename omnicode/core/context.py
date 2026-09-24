@@ -5,6 +5,7 @@ Context management, system prompt builder, session persistence, and auto-compact
 import os
 import json
 import uuid
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -185,40 +186,176 @@ class ContextManager:
         self.save_session()
         return f"Compacted {cutoff} messages into summary. Current estimated tokens: {self.get_current_token_count()}"
 
-    def save_session(self):
+    def save_session(self, custom_name: Optional[str] = None) -> str:
         """Persist session state to ~/.omnicode/sessions/<session_id>.json."""
         try:
-            session_file = get_global_config_dir() / "sessions" / f"{self.session_id}.json"
+            sessions_dir = get_global_config_dir() / "sessions"
+            sessions_dir.mkdir(parents=True, exist_ok=True)
+            old_file = sessions_dir / f"{self.session_id}.json"
+
+            if custom_name:
+                clean_name = re.sub(r"[^\w\-\.]", "_", custom_name.strip())
+                if clean_name and clean_name != self.session_id:
+                    if old_file.is_file():
+                        try:
+                            old_file.unlink()
+                        except Exception:
+                            pass
+                    self.session_id = clean_name
+
+            session_file = sessions_dir / f"{self.session_id}.json"
+
+            # Compute preview of first user request
+            preview = ""
+            for m in self.messages:
+                if m.get("role") == "user":
+                    preview = m.get("content", "").replace("\n", " ")[:80]
+                    break
+
             data = {
                 "session_id": self.session_id,
                 "timestamp": datetime.now().isoformat(),
                 "model": self.config.model,
                 "workspace": str(self.workspace_root),
+                "preview": preview,
                 "messages": self.messages,
                 "token_summary": self.token_tracker.get_summary(),
             }
             with open(session_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
+            return str(session_file)
         except Exception:
-            pass
+            return ""
 
-    def load_session(self, session_id: str) -> bool:
-        """Load conversation from saved session file."""
+    def load_session(self, session_identifier: str = "") -> bool:
+        """
+        Load conversation from saved session file.
+        Supports exact session_id, prefix/substring match, 'latest', or index (1, 2, ...).
+        """
+        sessions_dir = get_global_config_dir() / "sessions"
+        if not sessions_dir.exists():
+            return False
+
+        target_file: Optional[Path] = None
+
+        # 1. If empty or 'latest', find most recent session
+        if not session_identifier or session_identifier.lower() == "latest":
+            all_sessions = list_saved_sessions()
+            if all_sessions:
+                target_file = Path(all_sessions[0]["path"])
+        
+        # 2. If integer index (1-based from list_saved_sessions)
+        elif session_identifier.isdigit():
+            idx = int(session_identifier)
+            all_sessions = list_saved_sessions()
+            if 1 <= idx <= len(all_sessions):
+                target_file = Path(all_sessions[idx - 1]["path"])
+
+        # 3. Direct filename match
+        elif (sessions_dir / f"{session_identifier}.json").is_file():
+            target_file = sessions_dir / f"{session_identifier}.json"
+
+        # 4. Prefix or substring search
+        if not target_file:
+            matches = list(sessions_dir.glob(f"*{session_identifier}*.json"))
+            if matches:
+                # Pick newest matching file
+                matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                target_file = matches[0]
+
+        if not target_file or not target_file.is_file():
+            return False
+
         try:
-            session_file = get_global_config_dir() / "sessions" / f"{session_id}.json"
-            if not session_file.is_file():
-                # Try finding match by prefix
-                matches = list((get_global_config_dir() / "sessions").glob(f"*{session_id}*.json"))
-                if matches:
-                    session_file = matches[0]
-                else:
-                    return False
-
-            with open(session_file, "r", encoding="utf-8") as f:
+            with open(target_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            self.session_id = data.get("session_id", self.session_id)
+            self.session_id = data.get("session_id", target_file.stem)
             self.messages = data.get("messages", [])
+            
+            # Restore model if available and workspace match
+            saved_model = data.get("model")
+            if saved_model:
+                self.config.model = saved_model
+                self.token_tracker.model_name = saved_model
+
             return True
         except Exception:
             return False
+
+
+def list_saved_sessions(workspace_filter: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Scan ~/.omnicode/sessions and return sorted metadata for all saved sessions."""
+    sessions_dir = get_global_config_dir() / "sessions"
+    if not sessions_dir.exists():
+        return []
+
+    results = []
+    for file_path in sessions_dir.glob("*.json"):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            ws = data.get("workspace", "")
+            if workspace_filter and ws and str(workspace_filter) != ws:
+                continue
+
+            iso_time = data.get("timestamp", "")
+            try:
+                dt = datetime.fromisoformat(iso_time)
+                formatted_time = dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                formatted_time = iso_time or "Unknown"
+
+            messages = data.get("messages", [])
+            preview = data.get("preview", "")
+            if not preview:
+                for m in messages:
+                    if m.get("role") == "user":
+                        preview = m.get("content", "").replace("\n", " ")[:80]
+                        break
+
+            results.append({
+                "session_id": data.get("session_id", file_path.stem),
+                "path": str(file_path),
+                "timestamp": formatted_time,
+                "raw_timestamp": iso_time,
+                "model": data.get("model", "unknown"),
+                "workspace": ws,
+                "message_count": len(messages),
+                "preview": preview or "(empty session)",
+                "mtime": file_path.stat().st_mtime,
+            })
+        except Exception:
+            continue
+
+    # Sort newest first by file modification time or raw timestamp
+    results.sort(key=lambda x: x.get("mtime", 0), reverse=True)
+    return results
+
+
+def delete_saved_session(session_identifier: str) -> bool:
+    """Delete a saved session by ID, prefix, or index."""
+    sessions = list_saved_sessions()
+    if not sessions:
+        return False
+
+    target_path = None
+    if session_identifier.isdigit():
+        idx = int(session_identifier)
+        if 1 <= idx <= len(sessions):
+            target_path = Path(sessions[idx - 1]["path"])
+    else:
+        for s in sessions:
+            if s["session_id"] == session_identifier or session_identifier in s["session_id"]:
+                target_path = Path(s["path"])
+                break
+
+    if target_path and target_path.is_file():
+        try:
+            target_path.unlink()
+            return True
+        except Exception:
+            return False
+    return False
+

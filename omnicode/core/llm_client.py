@@ -6,6 +6,7 @@ Supports custom base_url, API keys, headers, and retry logic.
 
 import json
 from typing import List, Dict, Any, Optional, AsyncGenerator, Tuple
+import httpx
 import openai
 from openai import AsyncOpenAI
 from ..config import OmniConfig
@@ -46,25 +47,58 @@ class LLMResponse:
 
 
 class LLMClient:
-    """OpenAI API compatible asynchronous LLM client."""
+    """OpenAI API compatible asynchronous LLM client with idle-resilient transport."""
 
     def __init__(self, config: OmniConfig):
         self.config = config
-        api_key = config.api_key.strip() if config.api_key else "EMPTY"
-        self.client = AsyncOpenAI(
+        self._http_client: Optional[httpx.AsyncClient] = None
+        self.client: AsyncOpenAI = self._create_client()
+
+    def _create_client(self) -> AsyncOpenAI:
+        """Create a resilient AsyncOpenAI client with short keepalive expiry to prevent stale sockets."""
+        api_key = self.config.api_key.strip() if self.config.api_key else "EMPTY"
+        
+        # Explicit connection pool limits with short keepalive expiry
+        # This prevents hangs when middleboxes or servers close idle TCP connections
+        self._http_client = httpx.AsyncClient(
+            limits=httpx.Limits(
+                max_keepalive_connections=5,
+                max_connections=20,
+                keepalive_expiry=15.0,  # drop idle sockets after 15 seconds
+            ),
+            timeout=httpx.Timeout(
+                timeout=120.0,
+                connect=15.0,
+                read=120.0,
+                write=30.0,
+                pool=10.0,
+            ),
+            headers=self.config.custom_headers or None,
+        )
+
+        return AsyncOpenAI(
             api_key=api_key,
-            base_url=config.base_url,
-            default_headers=config.custom_headers or None,
-            timeout=120.0,
+            base_url=self.config.base_url,
+            http_client=self._http_client,
             max_retries=2,
         )
+
+    def reconnect(self):
+        """Re-create client and fresh connection pool after idle periods or connection drops."""
+        try:
+            if self._http_client and not self._http_client.is_closed:
+                # Close old transport without blocking
+                pass
+        except Exception:
+            pass
+        self.client = self._create_client()
 
     async def stream_chat(
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> AsyncGenerator[StreamChunk, None]:
-        """Stream chat completions from OpenAI-compatible endpoint."""
+        """Stream chat completions from OpenAI-compatible endpoint with automatic reconnect on idle."""
         kwargs: Dict[str, Any] = {
             "model": self.config.model,
             "messages": messages,
@@ -79,8 +113,42 @@ class LLMClient:
         if self.config.max_tokens:
             kwargs["max_tokens"] = self.config.max_tokens
 
+        stream = None
+        # Attempt request with automatic reconnection if idle socket died
+        for attempt in range(2):
+            try:
+                stream = await self.client.chat.completions.create(**kwargs)
+                break
+            except (
+                openai.APIConnectionError,
+                openai.APITimeoutError,
+                httpx.RemoteProtocolError,
+                httpx.ReadError,
+                httpx.ConnectError,
+                httpx.PoolTimeout,
+            ) as e:
+                if attempt == 0:
+                    # Stale connection from idle state: refresh client and retry once
+                    self.reconnect()
+                    continue
+                raise RuntimeError(
+                    f"Connection Error: Could not connect to LLM server at {self.config.base_url} after retry. "
+                    f"Verify your network connection or server status. ({str(e)})"
+                )
+            except openai.AuthenticationError as e:
+                raise RuntimeError(
+                    f"Authentication Error with {self.config.base_url}: Invalid or missing API key. "
+                    f"Please set your API key using 'omnicode auth' or OPENAI_API_KEY environment variable. ({str(e)})"
+                )
+            except openai.BadRequestError as e:
+                raise RuntimeError(f"Bad Request Error ({self.config.model}): {str(e)}")
+            except Exception as e:
+                raise RuntimeError(f"LLM API Error: {str(e)}")
+
+        if not stream:
+            return
+
         try:
-            stream = await self.client.chat.completions.create(**kwargs)
             async for chunk in stream:
                 if not chunk.choices:
                     continue
@@ -104,20 +172,12 @@ class LLMClient:
                     tool_call_delta=tool_calls_delta,
                     is_done=chunk.choices[0].finish_reason is not None,
                 )
-        except openai.AuthenticationError as e:
-            raise RuntimeError(
-                f"Authentication Error with {self.config.base_url}: Invalid or missing API key. "
-                f"Please set your API key using 'omnicode config --key <key>' or OPENAI_API_KEY environment variable. ({str(e)})"
-            )
-        except openai.APIConnectionError as e:
-            raise RuntimeError(
-                f"Connection Error: Could not connect to LLM server at {self.config.base_url}. "
-                f"Verify your network or local server (Ollama/vLLM/LMStudio) status. ({str(e)})"
-            )
-        except openai.BadRequestError as e:
-            raise RuntimeError(f"Bad Request Error ({self.config.model}): {str(e)}")
+        except (openai.APIConnectionError, httpx.RemoteProtocolError, httpx.ReadError) as e:
+            self.reconnect()
+            raise RuntimeError(f"Connection dropped during streaming: {str(e)}")
         except Exception as e:
-            raise RuntimeError(f"LLM API Error: {str(e)}")
+            raise RuntimeError(f"LLM Streaming Error: {str(e)}")
+
 
     async def complete_turn(
         self,

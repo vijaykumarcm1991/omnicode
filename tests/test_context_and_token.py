@@ -54,3 +54,39 @@ async def test_context_compaction(tmp_path):
     summary_msg = await ctx.compact_history()
     assert "Compacted" in summary_msg
     assert len(ctx.messages) < 10
+
+
+def test_session_persistence_and_resume(tmp_path, monkeypatch):
+    from omnicode.core.context import list_saved_sessions, delete_saved_session
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    config = OmniConfig(model="deepseek-chat")
+    ctx = ContextManager(config=config, workspace_root=tmp_path)
+    ctx.add_user_message("Refactor database schema")
+    ctx.add_assistant_message("Schema refactored successfully.")
+
+    # Save session with custom name
+    saved_path = ctx.save_session(custom_name="db-refactor")
+    assert "db-refactor" in saved_path
+
+    # List saved sessions
+    sessions = list_saved_sessions()
+    assert len(sessions) >= 1
+    assert any(s["session_id"] == "db-refactor" for s in sessions)
+    assert any("Refactor database schema" in s["preview"] for s in sessions)
+
+    # Resume into fresh context manager
+    new_ctx = ContextManager(config=config, workspace_root=tmp_path)
+    assert new_ctx.load_session("db-refactor") is True
+    assert len(new_ctx.messages) == 2
+    assert new_ctx.messages[0]["content"] == "Refactor database schema"
+
+    # Test resume latest
+    latest_ctx = ContextManager(config=config, workspace_root=tmp_path)
+    assert latest_ctx.load_session("latest") is True
+    assert len(latest_ctx.messages) == 2
+
+    # Test delete session
+    assert delete_saved_session("db-refactor") is True
+    assert len(list_saved_sessions()) == 0
+

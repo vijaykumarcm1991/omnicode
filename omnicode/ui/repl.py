@@ -15,8 +15,10 @@ from rich.table import Table
 
 from ..config import OmniConfig, PROVIDER_PRESETS, save_project_config, detect_context_limit
 from .model_browser import build_models_table, browse_models_interactive, filter_models
+from ..core.context import list_saved_sessions, delete_saved_session
 from ..utils.git_utils import get_git_branch, get_git_diff, get_git_status_summary
 from ..utils.file_utils import load_gitignore, is_ignored
+from ..utils.system_info import prevent_windows_quick_edit
 
 if TYPE_CHECKING:
     from ..core.agent import OmniAgent
@@ -31,6 +33,9 @@ class OmniCompleter(Completer):
         self.slash_commands = [
             ("/help", "Show help and commands"),
             ("/auth", "Configure endpoint provider, API key, and model"),
+            ("/sessions", "List all saved conversation sessions"),
+            ("/resume", "Resume a saved conversation session"),
+            ("/session", "Manage sessions (save, resume, list, new)"),
             ("/clear", "Clear screen and reset context"),
             ("/compact", "Compact conversation context"),
             ("/cost", "Show token metrics and cost"),
@@ -425,6 +430,85 @@ class InteractiveREPL:
             self.console.print(f"[bold green]✓ Current configuration saved to {dest}.[/bold green]")
             self.console.print(f"[dim]Endpoint: {self.agent.config.base_url} | Model: {self.agent.config.model}[/dim]")
 
+        elif cmd in ["/sessions", "/history"]:
+            sessions = list_saved_sessions()
+            if not sessions:
+                self.console.print("[dim]No saved sessions found. Sessions are saved automatically as you chat.[/dim]")
+            else:
+                table = Table(title="[bold cyan]Saved Conversation Sessions[/bold cyan]", show_header=True, header_style="bold magenta")
+                table.add_column("#", style="dim", width=4)
+                table.add_column("Session ID", style="bold cyan")
+                table.add_column("Saved Time", style="dim")
+                table.add_column("Model", style="green")
+                table.add_column("Msgs", style="white", justify="right", width=5)
+                table.add_column("Initial Prompt / Goal", style="white")
+
+                for i, s in enumerate(sessions[:20], 1):
+                    is_current = " (active)" if s["session_id"] == self.agent.context_manager.session_id else ""
+                    table.add_row(
+                        str(i),
+                        s["session_id"] + is_current,
+                        s["timestamp"],
+                        s["model"],
+                        str(s["message_count"]),
+                        s["preview"],
+                    )
+
+                self.console.print(table)
+                self.console.print("[dim]Resume a session with: [bold white]/resume <#>[/bold white] or [bold white]/resume <session_id>[/bold white][/dim]")
+                self.console.print("[dim]Save current session name with: [bold white]/session save <custom-name>[/bold white][/dim]")
+
+        elif cmd in ["/resume", "/session-resume"]:
+            target = arg.strip()
+            if not target:
+                # If no arg, list sessions or resume latest
+                target = "latest"
+
+            if self.agent.context_manager.load_session(target):
+                self.agent.llm_client.config.model = self.agent.config.model
+                self.agent.context_manager.token_tracker.model_name = self.agent.config.model
+                count = len(self.agent.context_manager.messages)
+                self.console.print(
+                    f"[bold green]✓ Resumed session '{self.agent.context_manager.session_id}' "
+                    f"({count} messages loaded, Model: {self.agent.config.model}).[/bold green]"
+                )
+            else:
+                self.console.print(f"[bold red]Could not find session matching '{target}'. Run /sessions to view all.[/bold red]")
+
+        elif cmd == "/session":
+            sub_parts = arg.split(maxsplit=1)
+            sub_cmd = sub_parts[0].lower() if sub_parts else "list"
+            sub_arg = sub_parts[1] if len(sub_parts) > 1 else ""
+
+            if sub_cmd in ["list", "history"]:
+                await self._handle_slash_command("/sessions")
+            elif sub_cmd == "save":
+                saved_path = self.agent.context_manager.save_session(custom_name=sub_arg or None)
+                self.console.print(f"[bold green]✓ Session saved as: '{self.agent.context_manager.session_id}' ({saved_path})[/bold green]")
+            elif sub_cmd == "resume":
+                await self._handle_slash_command(f"/resume {sub_arg}")
+            elif sub_cmd == "new":
+                import uuid
+                from datetime import datetime
+                # Auto-save current
+                self.agent.context_manager.save_session()
+                self.agent.context_manager.clear_history()
+                self.agent.context_manager.session_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + str(uuid.uuid4())[:6]
+                self.console.print(f"[bold green]✓ Started fresh conversation session ({self.agent.context_manager.session_id}).[/bold green]")
+            elif sub_cmd == "delete":
+                if delete_saved_session(sub_arg):
+                    self.console.print(f"[bold green]✓ Deleted session '{sub_arg}'.[/bold green]")
+                else:
+                    self.console.print(f"[bold red]Session '{sub_arg}' not found.[/bold red]")
+            else:
+                self.console.print("[dim]Usage: /session [list | save <name> | resume <id> | new | delete <id>][/dim]")
+
+        elif cmd in ["/new", "/new-session"]:
+            await self._handle_slash_command("/session new")
+
+        elif cmd in ["/save-session"]:
+            await self._handle_slash_command(f"/session save {arg}")
+
         elif cmd == "/rules":
             if self.agent.config.system_prompt_extra:
                 self.console.print(self.agent.config.system_prompt_extra)
@@ -435,3 +519,4 @@ class InteractiveREPL:
             self.console.print(f"[yellow]Unknown command '{cmd}'. Type /help for available commands.[/yellow]")
 
         return None
+

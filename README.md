@@ -5,7 +5,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-23%20Passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-24%20Passed-brightgreen.svg)]()
 
 ---
 
@@ -13,6 +13,8 @@
 
 - 🔌 **Universal OpenAI-API Compatibility**: Works with any OpenAI-compatible provider (OpenAI, OpenRouter, DeepSeek, Groq, Ollama, LM Studio, vLLM, or private custom clusters).
 - 🔐 **Streamlined `/auth` Setup**: Choose from known providers with preconfigured URLs (only prompts for API key) or custom providers (URL + key), with instant live model discovery.
+- 💾 **Session Persistence & Resuming**: Automatically saves conversation state. Resume any previous session seamlessly via CLI (`omnicode -r` / `omnicode resume`) or in-REPL (`/resume`, `/sessions`, `/session save <name>`).
+- ⚡ **Idle & Network Resilience**: Auto-reconnects on dead or stale TCP sockets after long idle periods without freezing or requiring a terminal restart. Disables Windows QuickEdit console freeze.
 - 🚫 **Zero Hardcoded Models**: No stale or hardcoded model lists. OmniCode dynamically queries `/v1/models` in real time.
 - 📜 **Built-in Model Pagination & Search**: Easily browse and filter through massive model catalogs (e.g. OpenRouter, custom clusters) with pagination (`n`/`p`), search (`s <query>`), and interactive scrolling.
 - 📏 **Automatic Context Limit Detection**: Automatically determines and configures the exact context window limit (e.g. 128k, 200k, 1M tokens) from server metadata and model families.
@@ -205,12 +207,40 @@ omnicode -y "Write unit tests for utils/string_helpers.py and run pytest"
 cat test_failure.log | omnicode "Explain why this test failed and patch the file"
 ```
 
-### 3. REPL Slash Commands
+### 3. Session Persistence & Resuming (`omnicode --resume`)
+
+OmniCode automatically persists every conversation to `~/.omnicode/sessions/`. You can resume previous sessions instantly:
+
+```bash
+# Resume the latest session
+omnicode --resume
+# or shorthand
+omnicode -r
+
+# List all saved sessions with timestamp, model, message count, and preview
+omnicode sessions
+
+# Resume a specific session by number or session ID
+omnicode resume 1
+omnicode resume db-refactor
+omnicode -r 20260924_201530_a8f12c
+
+# Delete an old session
+omnicode sessions -d db-refactor
+```
+
+---
+
+### 4. REPL Slash Commands
 
 Within the interactive REPL, use slash commands for fast actions:
 
 - `/help` — Display help and command table
 - `/auth` — Configure provider, API key, and auto-discover models
+- `/sessions` or `/history` — List all saved conversation sessions
+- `/resume [id|#]` — Resume a saved session directly inside REPL
+- `/session save <name>` — Save active session with a recognizable custom name
+- `/session new` or `/new` — Start a fresh session (auto-saving previous session)
 - `/save [project]` — Save current endpoint and model settings to config
 - `/models [page|query|-i]` — Discover, paginate, and search models from `/v1/models`
 - `/model [name]` — Switch or view active model with auto-detected context limit

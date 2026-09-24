@@ -26,8 +26,11 @@ from .config import (
     PROVIDER_PRESETS,
 )
 from .core.agent import OmniAgent
+from .core.context import list_saved_sessions, delete_saved_session
 from .ui.repl import InteractiveREPL
 from .ui.model_browser import build_models_table, browse_models_interactive, filter_models
+from .utils.system_info import prevent_windows_quick_edit
+
 
 # Reconfigure UTF-8 encoding on Windows to support emojis and unicode characters
 if sys.platform == "win32":
@@ -56,7 +59,7 @@ console = Console(legacy_windows=False)
 @click.option("--save-project", is_flag=True, help="Persist these endpoint & model settings to project config (.omnicode/config.json).")
 @click.option("-y", "--yes", "--yolo", "--dangerously-skip-permissions", is_flag=True, help="Auto-approve all tool actions without confirmation.")
 @click.option("--permission-mode", type=click.Choice(["ask", "auto-read", "yolo"]), help="Tool permission mode.")
-@click.option("--resume", help="Resume previous session by ID or 'latest'.")
+@click.option("-r", "--resume", "resume", is_flag=False, flag_value="latest", help="Resume previous session by ID, index, or 'latest'.")
 @click.option("--max-steps", type=int, help="Maximum agent steps per turn.")
 @click.pass_context
 def main(
@@ -75,6 +78,8 @@ def main(
     max_steps: Optional[int],
 ):
     """OmniCode: OpenAI-API Compatible Autonomous Coding Agent & CLI Tool."""
+    prevent_windows_quick_edit()
+
     # If a subcommand like 'config', 'models', or 'init' was called, pass through
     if ctx.invoked_subcommand is not None:
         return
@@ -130,21 +135,11 @@ def main(
 
     # If resume requested
     if resume:
-        if resume == "latest":
-            from .config import get_global_config_dir
-            sess_files = sorted(
-                list((get_global_config_dir() / "sessions").glob("*.json")),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-            if sess_files:
-                agent.context_manager.load_session(sess_files[0].stem)
-                console.print(f"[bold green]✓ Resumed latest session: {sess_files[0].stem}[/bold green]")
+        if agent.context_manager.load_session(resume):
+            count = len(agent.context_manager.messages)
+            console.print(f"[bold green]✓ Resumed session '{agent.context_manager.session_id}' ({count} messages, Model: {agent.config.model}).[/bold green]\n")
         else:
-            if agent.context_manager.load_session(resume):
-                console.print(f"[bold green]✓ Resumed session: {resume}[/bold green]")
-            else:
-                console.print(f"[yellow]Warning: Could not find session '{resume}', starting fresh.[/yellow]")
+            console.print(f"[yellow]Warning: Could not find session matching '{resume}', starting fresh session.[/yellow]\n")
 
     # Run in Single-Prompt mode or Interactive REPL mode
     if user_query:
@@ -157,6 +152,63 @@ def main(
         # Interactive REPL mode
         repl = InteractiveREPL(agent=agent, console=console)
         asyncio.run(repl.start())
+
+
+@main.command("sessions")
+@click.option("-d", "--delete", help="Delete a saved session by ID or number.")
+@click.option("-w", "--workspace-only", is_flag=True, help="Only show sessions from current workspace.")
+def sessions_cmd(delete: Optional[str], workspace_only: bool):
+    """List or manage saved conversation sessions."""
+    if delete:
+        if delete_saved_session(delete):
+            console.print(f"[bold green]✓ Deleted session '{delete}'.[/bold green]")
+        else:
+            console.print(f"[bold red]Could not find session matching '{delete}'.[/bold red]")
+        return
+
+    ws = Path.cwd() if workspace_only else None
+    sessions = list_saved_sessions(workspace_filter=ws)
+    if not sessions:
+        console.print("[dim]No saved sessions found. Sessions are saved automatically as you chat.[/dim]")
+        return
+
+    table = Table(title="[bold cyan]Saved OmniCode Conversation Sessions[/bold cyan]", show_header=True, header_style="bold magenta")
+    table.add_column("#", style="dim", width=4)
+    table.add_column("Session ID", style="bold cyan")
+    table.add_column("Date / Time", style="dim")
+    table.add_column("Model", style="green")
+    table.add_column("Msgs", style="white", justify="right", width=5)
+    table.add_column("Initial Prompt / Goal", style="white")
+
+    for i, s in enumerate(sessions[:25], 1):
+        table.add_row(
+            str(i),
+            s["session_id"],
+            s["timestamp"],
+            s["model"],
+            str(s["message_count"]),
+            s["preview"],
+        )
+
+    console.print(table)
+    console.print("\n[dim]Resume a session with: [bold white]omnicode resume <#>[/bold white] or [bold white]omnicode -r <session_id>[/bold white][/dim]")
+
+
+@main.command("resume")
+@click.argument("session_id", required=False, default="latest")
+@click.pass_context
+def resume_cmd(ctx, session_id: str):
+    """Resume an existing conversation session by ID or index number (default: latest)."""
+    # Forward to main with resume parameter
+    ctx.invoke(main, resume=session_id)
+
+
+@main.command("history")
+@click.pass_context
+def history_cmd(ctx):
+    """Alias for 'omnicode sessions'."""
+    ctx.invoke(sessions_cmd, delete=None, workspace_only=False)
+
 
 
 @main.command("auth")
