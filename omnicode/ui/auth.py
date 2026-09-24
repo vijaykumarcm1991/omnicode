@@ -21,6 +21,7 @@ from ..config import (
     load_config,
 )
 from ..core.llm_client import LLMClient
+from .model_browser import browse_models_interactive
 
 
 async def run_auth_wizard(
@@ -112,39 +113,13 @@ async def run_auth_wizard(
     context_window = 128000
 
     if discovered_models:
-        console.print(f"[bold green]✓ Discovered {len(discovered_models)} models from endpoint:[/bold green]")
-        mod_table = Table(title="Available Models", show_header=True, header_style="bold cyan")
-        mod_table.add_column("#", style="dim", width=4)
-        mod_table.add_column("Model ID", style="bold green")
-        mod_table.add_column("Context Window (Auto-Detected)", style="magenta")
-        mod_table.add_column("Owner", style="dim")
-
-        preview_limit = min(20, len(discovered_models))
-        for i in range(preview_limit):
-            m = discovered_models[i]
-            ctx_len = detect_context_limit(m["id"], m.get("raw"))
-            mod_table.add_row(str(i + 1), m["id"], f"{ctx_len:,} tokens", m["owned_by"])
-
-        console.print(mod_table)
-        if len(discovered_models) > preview_limit:
-            console.print(f"[dim]... and {len(discovered_models) - preview_limit} more models.[/dim]")
-
-        model_choices = [str(i) for i in range(1, preview_limit + 1)]
-        choice_model = Prompt.ask(
-            "\n[bold white]Select model number or type model ID[/bold white]",
-            default="1",
+        console.print(f"[bold green]✓ Discovered {len(discovered_models)} models from endpoint:[/bold green]\n")
+        selected_model, context_window = browse_models_interactive(
+            discovered_models=discovered_models,
             console=console,
-        ).strip()
-
-        if choice_model.isdigit() and 1 <= int(choice_model) <= len(discovered_models):
-            selected_item = discovered_models[int(choice_model) - 1]
-            selected_model = selected_item["id"]
-            context_window = detect_context_limit(selected_model, selected_item.get("raw"))
-        else:
-            selected_model = choice_model
-            # Match in discovered or detect
-            raw_meta = next((m.get("raw") for m in discovered_models if m["id"] == selected_model), None)
-            context_window = detect_context_limit(selected_model, raw_meta)
+            default_model=cfg.model or "default",
+            page_size=15,
+        )
     else:
         selected_model = Prompt.ask(
             "[bold white]Enter model name[/bold white]",
@@ -153,7 +128,8 @@ async def run_auth_wizard(
         ).strip()
         context_window = detect_context_limit(selected_model)
 
-    console.print(f"[dim green]✓ Auto-configured context window limit: [bold]{context_window:,}[/bold] tokens.[/dim green]")
+    console.print(f"[dim green]✓ Selected model: [bold]{selected_model}[/bold] (Context limit: [bold]{context_window:,}[/bold] tokens).[/dim green]")
+
 
     # Create new config object
     new_cfg = OmniConfig(

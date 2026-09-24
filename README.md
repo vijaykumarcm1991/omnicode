@@ -5,7 +5,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-21%20Passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-23%20Passed-brightgreen.svg)]()
 
 ---
 
@@ -14,6 +14,7 @@
 - 🔌 **Universal OpenAI-API Compatibility**: Works with any OpenAI-compatible provider (OpenAI, OpenRouter, DeepSeek, Groq, Ollama, LM Studio, vLLM, or private custom clusters).
 - 🔐 **Streamlined `/auth` Setup**: Choose from known providers with preconfigured URLs (only prompts for API key) or custom providers (URL + key), with instant live model discovery.
 - 🚫 **Zero Hardcoded Models**: No stale or hardcoded model lists. OmniCode dynamically queries `/v1/models` in real time.
+- 📜 **Built-in Model Pagination & Search**: Easily browse and filter through massive model catalogs (e.g. OpenRouter, custom clusters) with pagination (`n`/`p`), search (`s <query>`), and interactive scrolling.
 - 📏 **Automatic Context Limit Detection**: Automatically determines and configures the exact context window limit (e.g. 128k, 200k, 1M tokens) from server metadata and model families.
 - 🧠 **Autonomous Multi-Turn Agent Loop**: Powered by a robust ReAct execution engine with real-time streaming, chain-of-thought (`<think>` / reasoning) visualization, and automatic loop detection.
 - 🛠️ **Built-in Toolset**:
@@ -131,21 +132,45 @@ All models and their context limits are **dynamically resolved** upon connection
 
 ## 🔍 Live Dynamic Model Discovery (`/v1/models`)
 
-OmniCode can automatically query the `GET /v1/models` endpoint of whatever server you connect to.
+OmniCode automatically queries the standard `GET /v1/models` endpoint of your connected provider and provides built-in pagination, search, and context limit detection.
 
-### Terminal Discovery:
+### 1. Terminal Discovery & Pagination:
 ```bash
-# Discover models from current active endpoint
+# Discover models from current active endpoint with pagination
 omnicode models --fetch
+
+# Jump directly to page 2 (15 models per page)
+omnicode models --fetch -p 2
+
+# Search/filter models by keyword (e.g. 'claude', 'qwen', 'deepseek', '70b')
+omnicode models --fetch -s "claude"
+
+# Launch interactive scrolling & selection browser
+omnicode models --fetch -i
+
+# Display all models at once without pagination
+omnicode models --fetch --all
 
 # Query a specific remote or local server
 omnicode models --fetch --base-url "http://localhost:11434/v1"
 omnicode models --fetch --base-url "https://openrouter.ai/api/v1" --api-key "sk-or-..."
 ```
 
-### In-REPL Discovery:
-- Type `/models` in the chat shell to discover and list all available models.
-- Type `/model <Tab>` to autoselect any model discovered from the endpoint.
+### 2. Interactive Auth Wizard Pagination:
+When running `omnicode auth` (or `/auth` in REPL):
+- `n` / `next`: Move to next page
+- `p` / `prev`: Move to previous page
+- `s <keyword>` / `f <keyword>`: Live filter models
+- `c` / `clear`: Clear filter
+- `1..N`: Select model by number
+- `<name>`: Select or type model ID directly
+
+### 3. In-REPL Discovery:
+- `/models` — Discover models and view page 1 with total model count
+- `/models <page>` — View specific page (e.g. `/models 2`)
+- `/models <search>` — Search models (e.g. `/models deepseek` or `/models coder`)
+- `/models -i` — Open interactive model browser
+- `/model <name>` — Switch active model (with `<Tab>` autocompletion & automatic context limit detection)
 
 ---
 
@@ -187,8 +212,8 @@ Within the interactive REPL, use slash commands for fast actions:
 - `/help` — Display help and command table
 - `/auth` — Configure provider, API key, and auto-discover models
 - `/save [project]` — Save current endpoint and model settings to config
-- `/models` — Discover and list all models from `/v1/models`
-- `/model [name]` — Switch or view the active LLM model (supports `<Tab>` autocompletion)
+- `/models [page|query|-i]` — Discover, paginate, and search models from `/v1/models`
+- `/model [name]` — Switch or view active model with auto-detected context limit
 - `/provider [name]` — Switch provider preset (`openai`, `openrouter`, `deepseek`, etc.)
 - `/mode [ask|auto-read|yolo]` — Change tool permission mode
 - `/clear` — Clear terminal and reset conversation context
@@ -215,6 +240,67 @@ This creates `.omnicoderules` in your project root. OmniCode automatically injec
 
 ---
 
+## 🗑️ How to Completely Uninstall OmniCode
+
+If you wish to completely remove OmniCode and all associated data, cache, and configurations from your machine, follow these steps:
+
+### Option A: Automated Clean Up (Recommended)
+
+1. Run the built-in uninstall assistant to purge all configuration files, profiles, and history:
+   ```bash
+   omnicode uninstall
+   ```
+2. Remove the Python package executable:
+   ```bash
+   pip uninstall omnicode -y
+   ```
+
+---
+
+### Option B: Manual Uninstallation
+
+#### Step 1: Uninstall the Python Package
+```bash
+pip uninstall omnicode -y
+```
+*(If installed with `pipx`, run: `pipx uninstall omnicode`)*
+
+#### Step 2: Remove Global Configurations & Stored Profiles
+- **Windows (PowerShell)**:
+  ```powershell
+  Remove-Item -Recurse -Force "$HOME\.omnicode"
+  ```
+- **Windows (Command Prompt)**:
+  ```cmd
+  rmdir /s /q "%USERPROFILE%\.omnicode"
+  ```
+- **Linux / macOS (Bash / Zsh)**:
+  ```bash
+  rm -rf ~/.omnicode
+  ```
+
+#### Step 3: Remove Project-Level Configs (Optional)
+If you initialized OmniCode in specific project folders:
+```bash
+# Windows (PowerShell)
+Remove-Item -Recurse -Force .omnicode, .omnicoderules -ErrorAction SilentlyContinue
+
+# Linux / macOS
+rm -rf .omnicode .omnicoderules
+```
+
+#### Step 4: Remove Cloned Source Repository (Optional)
+If you cloned the source repository:
+```bash
+# Windows
+rmdir /s /q omnicode
+
+# Linux / macOS
+rm -rf omnicode
+```
+
+---
+
 ## 🧪 Testing
 
 Run the test suite with `pytest`:
@@ -228,3 +314,4 @@ pytest -v
 ## 📄 License
 
 MIT License. Crafted for high-performance AI-assisted software engineering.
+

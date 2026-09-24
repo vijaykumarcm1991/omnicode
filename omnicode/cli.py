@@ -22,10 +22,12 @@ from .config import (
     list_profiles,
     set_active_profile,
     get_global_config_path,
+    KNOWN_PROVIDERS,
     PROVIDER_PRESETS,
 )
 from .core.agent import OmniAgent
 from .ui.repl import InteractiveREPL
+from .ui.model_browser import build_models_table, browse_models_interactive, filter_models
 
 # Reconfigure UTF-8 encoding on Windows to support emojis and unicode characters
 if sys.platform == "win32":
@@ -158,12 +160,23 @@ def main(
 
 
 @main.command("auth")
-@main.command("setup")
-@main.command("login")
 def auth_cmd():
     """Interactive authentication wizard: select known provider or custom endpoint, enter key, and auto-discover models."""
     from .ui.auth import run_auth_wizard
     asyncio.run(run_auth_wizard(console=console, workspace_root=Path.cwd()))
+
+
+@main.command("setup")
+def setup_cmd():
+    """Alias for 'omnicode auth'."""
+    auth_cmd()
+
+
+@main.command("login")
+def login_cmd():
+    """Alias for 'omnicode auth'."""
+    auth_cmd()
+
 
 
 @main.group("profile")
@@ -281,20 +294,31 @@ def init_cmd(global_config: bool):
 @click.option("-b", "--base-url", help="Override base URL for model discovery.")
 @click.option("-k", "--api-key", help="Override API key for model discovery.")
 @click.option("--provider", help="Provider preset to query.")
+@click.option("-s", "--search", default="", help="Search/filter models by keyword.")
+@click.option("-p", "--page", default=1, type=int, help="Page number to view.")
+@click.option("--page-size", default=15, type=int, help="Number of models per page (default: 15).")
+@click.option("-i", "--interactive", is_flag=True, help="Open interactive scrolling & search browser.")
+@click.option("-a", "--all", "show_all", is_flag=True, help="Display all discovered models without pagination.")
 def models_cmd(
     fetch_remote: bool = False,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     provider: Optional[str] = None,
+    search: str = "",
+    page: int = 1,
+    page_size: int = 15,
+    interactive: bool = False,
+    show_all: bool = False,
 ):
-    """List supported provider presets and discover models from /v1/models."""
+    """List supported providers and discover models from /v1/models with pagination."""
     cfg = load_config(
         override_base_url=base_url,
         override_api_key=api_key,
         override_provider=provider,
     )
 
-    if fetch_remote:
+    # If base_url or fetch flag is specified, discover models from endpoint
+    if fetch_remote or base_url or cfg.base_url:
         from .core.llm_client import LLMClient
         client = LLMClient(cfg)
         try:
@@ -305,33 +329,96 @@ def models_cmd(
                 console.print(f"[yellow]No models returned from {cfg.base_url}/models.[/yellow]")
                 return
 
-            table = Table(title=f"[bold cyan]Live Discovered Models ({cfg.base_url}/models)[/bold cyan]")
-            table.add_column("Model ID", style="bold green")
-            table.add_column("Owner", style="cyan")
+            if interactive:
+                browse_models_interactive(
+                    discovered_models=models,
+                    console=console,
+                    default_model=cfg.model,
+                    page_size=page_size,
+                )
+                return
 
-            for m in models:
-                table.add_row(m["id"], m["owned_by"])
-
+            effective_page_size = len(models) if show_all else page_size
+            table, total_pages, total_count = build_models_table(
+                models=models,
+                page=page,
+                page_size=effective_page_size,
+                query=search,
+                title_prefix=f"Live Discovered Models ({cfg.base_url}/models)",
+            )
             console.print(table)
-            console.print(f"[dim]Total: {len(models)} models available on endpoint.[/dim]")
+
+            if total_pages > 1 and not show_all:
+                console.print(
+                    f"[dim]Tip: Use [bold white]omnicode models -p 2[/bold white] for next page, "
+                    f"[bold white]-s <name>[/bold white] to search, or [bold white]-i[/bold white] for interactive browser.[/dim]"
+                )
             return
         except Exception as e:
             console.print(f"[bold red]Discovery Error:[/bold red] {str(e)}")
-            console.print("[dim]Falling back to preset list...[/dim]\n")
+            console.print("[dim]Falling back to known providers list...[/dim]\n")
 
-    # Display provider presets table
-    table = Table(title="[bold cyan]Supported Provider Presets[/bold cyan]")
-    table.add_column("Provider", style="bold cyan")
-    table.add_column("Default Model", style="green")
-    table.add_column("Base URL", style="dim")
-    table.add_column("Key Models", style="white")
+    # Display known providers table
+    table = Table(title="[bold cyan]Supported LLM Providers[/bold cyan]", show_header=True, header_style="bold magenta")
+    table.add_column("Provider Key", style="bold cyan")
+    table.add_column("Provider Name", style="white")
+    table.add_column("Preconfigured Base URL", style="dim")
+    table.add_column("API Key Required", style="green")
 
-    for name, data in PROVIDER_PRESETS.items():
-        models_str = ", ".join(data.get("models", [])[:3])
-        table.add_row(name, data.get("default_model", ""), data.get("base_url", ""), models_str)
+    for key, data in KNOWN_PROVIDERS.items():
+        req_str = "Yes" if data.get("requires_key", True) else "Optional (Local)"
+        table.add_row(key, data.get("name", key), data.get("base_url", ""), req_str)
 
     console.print(table)
-    console.print("[dim]Tip: Run [bold white]omnicode models --fetch[/bold white] (or [bold white]/models[/bold white] in REPL) to discover live models from your server.[/dim]")
+    console.print("[dim]Tip: Run [bold white]omnicode auth[/bold white] to connect and auto-discover models from any provider or custom server.[/dim]")
+
+
+@main.command("uninstall")
+@click.option("-y", "--yes", is_flag=True, help="Skip confirmation prompt.")
+def uninstall_cmd(yes: bool):
+    """Clean up OmniCode configuration, cached data, and print full uninstallation steps."""
+    import shutil
+    global_dir = Path.home() / ".omnicode"
+    local_dir = Path.cwd() / ".omnicode"
+    local_rules = Path.cwd() / ".omnicoderules"
+
+    console.print("[bold red]⚠️ OmniCode Uninstallation Assistant[/bold red]\n")
+    console.print("This will remove OmniCode configuration files, saved profiles, and history:")
+    console.print(f"  • Global data directory: [cyan]{global_dir}[/cyan]")
+    if local_dir.exists():
+        console.print(f"  • Local workspace config: [cyan]{local_dir}[/cyan]")
+    if local_rules.exists():
+        console.print(f"  • Local workspace rules: [cyan]{local_rules}[/cyan]")
+
+    if not yes:
+        from rich.prompt import Confirm
+        proceed = Confirm.ask("\n[bold red]Proceed with deleting configuration and data?[/bold red]", console=console, default=False)
+        if not proceed:
+            console.print("[yellow]Uninstallation cancelled.[/yellow]")
+            return
+
+    # Delete global dir
+    if global_dir.exists():
+        try:
+            shutil.rmtree(global_dir)
+            console.print(f"[bold green]✓ Deleted global directory: {global_dir}[/bold green]")
+        except Exception as e:
+            console.print(f"[yellow]⚠️ Could not remove {global_dir}: {e}[/yellow]")
+
+    # Delete local dir
+    if local_dir.exists():
+        try:
+            shutil.rmtree(local_dir)
+            console.print(f"[bold green]✓ Deleted local workspace config: {local_dir}[/bold green]")
+        except Exception as e:
+            console.print(f"[yellow]⚠️ Could not remove {local_dir}: {e}[/yellow]")
+
+    console.print("\n[bold cyan]📦 To completely remove the OmniCode package and executable from your system:[/bold cyan]")
+    console.print("  [bold white]pip uninstall omnicode -y[/bold white]")
+    console.print("\n[dim]If you cloned the source code, you can now safely delete the repository folder:[/dim]")
+    console.print("  [dim]Windows: rmdir /s /q omnicode[/dim]")
+    console.print("  [dim]Linux/macOS: rm -rf omnicode[/dim]\n")
+
 
 
 @main.group("config")

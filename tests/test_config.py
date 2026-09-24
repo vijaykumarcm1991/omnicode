@@ -99,3 +99,22 @@ def test_detect_context_limit():
     # Default fallback
     assert detect_context_limit("completely-unknown-model-xyz") == 32768
 
+
+def test_uninstall_cli_command(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+    from omnicode.cli import main
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+
+    # Create dummy .omnicode dir
+    (tmp_path / ".omnicode").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".omnicode" / "config.json").write_text("{}", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["uninstall", "--yes"])
+    assert result.exit_code == 0
+    assert "Deleted" in result.output
+    assert not (tmp_path / ".omnicode").exists()
+
+

@@ -13,7 +13,8 @@ from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
 from rich.table import Table
 
-from ..config import OmniConfig, PROVIDER_PRESETS, save_project_config
+from ..config import OmniConfig, PROVIDER_PRESETS, save_project_config, detect_context_limit
+from .model_browser import build_models_table, browse_models_interactive, filter_models
 from ..utils.git_utils import get_git_branch, get_git_diff, get_git_status_summary
 from ..utils.file_utils import load_gitignore, is_ignored
 
@@ -140,6 +141,8 @@ class InteractiveREPL:
         self.completer = OmniCompleter(self.workspace_root)
         self.kb = KeyBindings()
         self._setup_keybindings()
+        self._cached_models: List[Dict[str, Any]] = []
+        self._models_page: int = 1
         self.session = PromptSession(
             completer=self.completer,
             style=create_prompt_style(),
@@ -256,39 +259,89 @@ class InteractiveREPL:
             table.add_row("Estimated Cost", f"${summary['session_cost_usd']:.4f} USD")
             self.console.print(table)
 
-        elif cmd in ["/models", "/model"]:
+        elif cmd == "/model":
             if arg:
                 self.agent.config.model = arg
                 self.agent.llm_client.config.model = arg
                 self.agent.context_manager.config.model = arg
                 self.agent.context_manager.token_tracker.model_name = arg
-                self.console.print(f"[bold green]✓ Switched model to: {arg}[/bold green]")
+                raw_meta = next(
+                    (m.get("raw") for m in self._cached_models if m["id"].lower() == arg.lower()),
+                    None,
+                )
+                new_ctx = detect_context_limit(arg, raw_meta)
+                self.agent.config.context_window = new_ctx
+                self.console.print(
+                    f"[bold green]✓ Switched model to: {arg} (Context limit: {new_ctx:,} tokens)[/bold green]"
+                )
             else:
-                self.console.print(f"Current Model: [bold green]{self.agent.config.model}[/bold green] (Endpoint: {self.agent.config.base_url})")
+                self.console.print(
+                    f"Current Model: [bold green]{self.agent.config.model}[/bold green] "
+                    f"(Context Limit: [bold magenta]{self.agent.config.context_window:,}[/bold magenta] tokens, Endpoint: {self.agent.config.base_url})"
+                )
+
+        elif cmd == "/models":
+            # Fetch if not cached or force refresh
+            if not self._cached_models or arg.lower() in ["refresh", "reload"]:
                 try:
                     with self.console.status(f"[cyan]Discovering models from {self.agent.config.base_url}/models ...[/cyan]"):
-                        models = await self.agent.llm_client.list_models()
-
-                    if models:
-                        self.completer.discovered_models = [m["id"] for m in models]
-                        table = Table(title=f"[bold cyan]Models Discovered from {self.agent.config.base_url}[/bold cyan]")
-                        table.add_column("Model ID", style="bold green")
-                        table.add_column("Owner", style="cyan")
-
-                        for m in models[:30]:  # preview up to 30
-                            table.add_row(m["id"], m["owned_by"])
-
-                        self.console.print(table)
-                        if len(models) > 30:
-                            self.console.print(f"[dim]... and {len(models) - 30} more models. Type /model <Tab> to autocomplete all.[/dim]")
-                        self.console.print(f"[dim]Switch model with: [bold white]/model <name>[/bold white][/dim]")
-                        return None
+                        self._cached_models = await self.agent.llm_client.list_models()
+                        self.completer.discovered_models = [m["id"] for m in self._cached_models]
                 except Exception as e:
                     self.console.print(f"[dim yellow]Could not auto-fetch from /v1/models: {str(e)}[/dim yellow]")
 
-                if self.agent.config.provider in PROVIDER_PRESETS:
-                    avail = PROVIDER_PRESETS[self.agent.config.provider].get("models", [])
-                    self.console.print(f"[dim]Available presets for {self.agent.config.provider}: {', '.join(avail)}[/dim]")
+            if not self._cached_models:
+                self.console.print(f"[yellow]No models found or endpoint not reachable ({self.agent.config.base_url}).[/yellow]")
+                return
+
+            arg_lower = arg.strip().lower()
+
+            if arg_lower in ["browse", "-i", "interactive"]:
+                selected, ctx = browse_models_interactive(
+                    discovered_models=self._cached_models,
+                    console=self.console,
+                    default_model=self.agent.config.model,
+                    page_size=15,
+                )
+                self.agent.config.model = selected
+                self.agent.llm_client.config.model = selected
+                self.agent.context_manager.config.model = selected
+                self.agent.context_manager.token_tracker.model_name = selected
+                self.agent.config.context_window = ctx
+                self.console.print(f"[bold green]✓ Switched model to: {selected} (Context limit: {ctx:,} tokens)[/bold green]")
+                return
+
+            # Determine page or query
+            page_to_show = self._models_page
+            query_filter = ""
+            if arg_lower.isdigit():
+                page_to_show = int(arg_lower)
+                self._models_page = page_to_show
+            elif arg_lower in ["n", "next"]:
+                self._models_page += 1
+                page_to_show = self._models_page
+            elif arg_lower in ["p", "prev", "previous"]:
+                self._models_page = max(1, self._models_page - 1)
+                page_to_show = self._models_page
+            elif arg_lower:
+                query_filter = arg.strip()
+                page_to_show = 1
+
+            table, total_pages, total_count = build_models_table(
+                models=self._cached_models,
+                page=page_to_show,
+                page_size=15,
+                query=query_filter,
+                title_prefix=f"Models Discovered from {self.agent.config.base_url}",
+            )
+            self.console.print(table)
+            if total_pages > 1:
+                self.console.print(
+                    f"[dim]Navigation: [bold white]/models {min(page_to_show + 1, total_pages)}[/bold white] (page), "
+                    f"[bold white]/models <query>[/bold white] (search), or [bold white]/models -i[/bold white] (interactive browser).[/dim]"
+                )
+            self.console.print(f"[dim]Switch model with: [bold white]/model <name>[/bold white][/dim]")
+
 
         elif cmd == "/auth":
             from .auth import run_auth_wizard

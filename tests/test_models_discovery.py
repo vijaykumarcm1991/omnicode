@@ -50,3 +50,33 @@ def test_custom_model_configuration():
     assert config.base_url == "http://192.168.1.100:8000/v1"
     assert config.model == "custom-internal-coder-70b"
     assert config.context_window == 64000
+
+
+def test_models_pagination_and_filtering():
+    from omnicode.ui.model_browser import filter_models, build_models_table
+
+    # Generate 45 mock models
+    mock_models = [
+        {"id": f"model-variant-{i}", "owned_by": "org-a" if i % 2 == 0 else "org-b", "raw": {}}
+        for i in range(1, 46)
+    ]
+
+    # Test filtering
+    filtered = filter_models(mock_models, "variant-1")
+    # Matches variant-1, variant-10..19 (11 models)
+    assert len(filtered) == 11
+
+    # Test pagination (15 per page -> 3 pages)
+    table_p1, total_pages, total_count = build_models_table(mock_models, page=1, page_size=15)
+    assert total_pages == 3
+    assert total_count == 45
+    assert len(table_p1.rows) == 15
+
+    # Page 3 should contain remaining 15 items
+    table_p3, _, _ = build_models_table(mock_models, page=3, page_size=15)
+    assert len(table_p3.rows) == 15
+
+    # Page beyond bounds clamps to last page
+    table_p99, _, _ = build_models_table(mock_models, page=99, page_size=15)
+    assert len(table_p99.rows) == 15
+
